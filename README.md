@@ -144,6 +144,17 @@ dotnet test
 
 测试覆盖协议解析、配置、登录限流、token 服务、用户文件、clip 与核心逻辑。
 
+
+### 下载与发布
+
+GitHub Release 提供两种 Framework-dependent 单文件包,目标机需预装 .NET 10 Runtime:
+
+- `TextCascade.Server-<version>-windows-x64.zip`
+- `TextCascade.Server-<version>-linux-x64.tar.gz`
+
+包内附带主程序、配置模板;Linux 包另附 systemd unit。每次 Release 同时提供 SHA-256 校验文件。
+
+推送 `v*.*.*` 标签(如 `v0.2.0`)会自动执行测试、构建双平台单文件包、生成校验和并发布 GitHub Release。`main` 分支和 Pull Request 会自动执行 restore/build/test CI。
 ### 生产部署(systemd)
 
 参考 `deploy/textcascade-server.service`:
@@ -279,6 +290,17 @@ dotnet test
 
 Covers protocol parsing, config, login limiting, token service, users file, and clip/core logic.
 
+
+### Downloads and Releases
+
+GitHub Releases provides two framework-dependent single-file archives. The .NET 10 Runtime must be installed on the target machine:
+
+- `TextCascade.Server-<version>-windows-x64.zip`
+- `TextCascade.Server-<version>-linux-x64.tar.gz`
+
+Each archive contains the executable and config template; the Linux archive also includes the systemd unit. Every Release includes a SHA-256 checksum file.
+
+Pushing a `v*.*.*` tag (for example `v0.2.0`) runs tests, builds both single-file archives, generates checksums, and publishes a GitHub Release. Pushes to `main` and pull requests run restore/build/test CI automatically.
 ### Production (systemd)
 
 See `deploy/textcascade-server.service`:
