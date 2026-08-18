@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+          dotnet-quality: ga
+
+      - name: Restore
+        run: dotnet restore TextCascade.Server.slnx
+
+      - name: Build
+        run: dotnet build TextCascade.Server.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test TextCascade.Server.slnx --configuration Release --no-build
+
+      - name: Resolve version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Windows framework-dependent single file
+        run: >
+          dotnet publish TextCascade.Server/TextCascade.Server.csproj
+          --configuration Release --runtime win-x64 --self-contained false
+          -p:PublishSingleFile=true -p:DebugType=embedded
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:PublishDir=$GITHUB_WORKSPACE/artifacts/win-x64/
+
+      - name: Publish Linux framework-dependent single file
+        run: >
+          dotnet publish TextCascade.Server/TextCascade.Server.csproj
+          --configuration Release --runtime linux-x64 --self-contained false
+          -p:PublishSingleFile=true -p:DebugType=embedded
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:PublishDir=$GITHUB_WORKSPACE/artifacts/linux-x64/
+
+      - name: Stage release files
+        run: |
+          mkdir -p release/textcascade-server-windows-x64 release/textcascade-server-linux-x64
+          cp artifacts/win-x64/TextCascade.Server.exe release/textcascade-server-windows-x64/
+          cp artifacts/linux-x64/TextCascade.Server release/textcascade-server-linux-x64/
+          cp deploy/textcascade.toml release/textcascade-server-windows-x64/
+          cp deploy/textcascade.toml release/textcascade-server-linux-x64/
+          cp deploy/textcascade-server.service release/textcascade-server-linux-x64/
+          chmod +x release/textcascade-server-linux-x64/TextCascade.Server
+          file release/textcascade-server-linux-x64/TextCascade.Server
+          test -f release/textcascade-server-windows-x64/TextCascade.Server.exe
+          test -f release/textcascade-server-linux-x64/TextCascade.Server
+
+      - name: Package Windows archive
+        run: |
+          cd release
+          zip -r ../TextCascade.Server-${{ steps.version.outputs.version }}-windows-x64.zip textcascade-server-windows-x64
+
+      - name: Package Linux archive
+        run: |
+          cd release
+          tar -czf ../TextCascade.Server-${{ steps.version.outputs.version }}-linux-x64.tar.gz textcascade-server-linux-x64
+
+      - name: Generate checksums
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          sha256sum \
+            TextCascade.Server-${{ steps.version.outputs.version }}-windows-x64.zip \
+            TextCascade.Server-${{ steps.version.outputs.version }}-linux-x64.tar.gz \
+            > checksums-sha256.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: textcascade-server-${{ steps.version.outputs.version }}
+          path: |
+            TextCascade.Server-${{ steps.version.outputs.version }}-windows-x64.zip
+            TextCascade.Server-${{ steps.version.outputs.version }}-linux-x64.tar.gz
+            checksums-sha256.txt
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: TextCascade Server ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            TextCascade.Server-${{ steps.version.outputs.version }}-windows-x64.zip
+            TextCascade.Server-${{ steps.version.outputs.version }}-linux-x64.tar.gz
+            checksums-sha256.txt
