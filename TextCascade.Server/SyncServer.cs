@@ -37,6 +37,7 @@ public sealed class ConnectionStateBag
     private DateTimeOffset lastPingAt;
     private bool closed;
     private bool helloTimeoutStarted;
+    private bool pongAwaited;
     public Channel<byte[]> SendQueue { get; }
     public CancellationTokenSource Cts { get; }
     public bool HelloReceived { get; internal set; }
@@ -52,6 +53,21 @@ public sealed class ConnectionStateBag
     {
         get { lock (gate) { return lastPingAt; } }
         internal set { lock (gate) { lastPingAt = value; } }
+    }
+
+    public void MarkPingAwaitingPong()
+    {
+        lock (gate) { pongAwaited = true; }
+    }
+
+    public bool TryTakePongAwaiting()
+    {
+        lock (gate)
+        {
+            if (!pongAwaited) return false;
+            pongAwaited = false;
+            return true;
+        }
     }
 
     public bool IsClosed
@@ -366,6 +382,7 @@ public sealed class UserHub
             }
 
             connection.State.LastPingAt = nowUtc;
+            connection.State.MarkPingAwaitingPong();
             if (!connection.State.TryEnqueueSend(bytes) && connection.State.MarkClosed())
             {
                 connection.State.Cts.Cancel();
@@ -687,6 +704,10 @@ public static class ConnectionHandler
             var received = await ReceiveFrameAsync(provisional, config.Limits.MaxFrameBytes, provisional.State.Cts.Token);
             if (received.MessageType == WebSocketMessageType.Close)
             {
+                await provisional.Socket.CloseOutputAsync(
+                    WebSocketCloseStatus.NormalClosure,
+                    "client_closed",
+                    CancellationToken.None);
                 SyncServer.Instance.CancelConnection(provisional, "closed");
                 return;
             }
@@ -851,7 +872,18 @@ public static class ConnectionHandler
                     break;
                 }
 
-                if (received.MessageType == WebSocketMessageType.Close) break;
+                if (received.MessageType == WebSocketMessageType.Close)
+                {
+                    try
+                    {
+                        await connection.Socket.CloseOutputAsync(
+                            WebSocketCloseStatus.NormalClosure,
+                            "client_closed",
+                            CancellationToken.None);
+                    }
+                    catch (WebSocketException) { }
+                    break;
+                }
 
                 if (!Protocol.CheckFrameSize(received.Payload.Length, config))
                 {
@@ -897,6 +929,16 @@ public static class ConnectionHandler
                         }
                         break;
                     case MessageKind.Pong:
+                        if (!connection.State.TryTakePongAwaiting())
+                        {
+                            var unsolicitedPong = Protocol.SerializeProtocolError(new ProtocolError(
+                                ProtocolErrorCode.InvalidMessage,
+                                "Pong received without an outstanding ping.",
+                                null));
+                            await SendSafeAsync(connection, unsolicitedPong);
+                            continue;
+                        }
+
                         if (connection.Hub is null || !connection.Hub.TryWriteJob(new PongJob(connection, (ClientPong)parse.Message!)))
                         {
                             SyncServer.Instance.CancelConnection(connection, "user_loop_unavailable");

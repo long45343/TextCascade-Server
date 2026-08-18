@@ -110,7 +110,20 @@ public sealed record LatestText(
 [JsonSerializable(typeof(PingMessage))]
 [JsonSerializable(typeof(ByeMessage))]
 [JsonSerializable(typeof(ProtocolErrorMessage))]
-internal sealed partial class ServerJsonContext : JsonSerializerContext;
+[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+internal sealed partial class ServerJsonContext : JsonSerializerContext
+{
+    public static ServerJsonContext Configured { get; }
+
+    public static JsonSerializerOptions SerializationOptions { get; } = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        WriteIndented = false,
+        Converters = { new UtcSecondDateTimeConverter() },
+    };
+
+    static ServerJsonContext() => Configured = new ServerJsonContext(SerializationOptions);
+}
 
 public sealed record WelcomeMessage(
     [property: JsonPropertyName("type")] string Type,
@@ -148,6 +161,17 @@ public sealed record ProtocolErrorMessage(
     [property: JsonPropertyName("message")] string Message,
     [property: JsonPropertyName("referenceId")] string? ReferenceId);
 
+internal sealed class UtcSecondDateTimeConverter : JsonConverter<DateTimeOffset>
+{
+    public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        => reader.TokenType == JsonTokenType.String && DateTimeOffset.TryParse(reader.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var value)
+            ? value.ToUniversalTime()
+            : throw new JsonException("Invalid date/time value.");
+
+    public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options)
+        => writer.WriteStringValue(value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+}
+
 public static class Protocol
 {
     public const int ProtocolVersion = 1;
@@ -158,19 +182,13 @@ public static class Protocol
 
     public const int MaxHashBytes = 4096;
 
-    private static readonly JsonSerializerOptions WriteOptions = new(JsonSerializerDefaults.Web)
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = false,
-    };
-
     public static byte[] SerializeMessage<T>(T message, JsonTypeInfo<T> typeInfo) =>
         JsonSerializer.SerializeToUtf8Bytes(message, typeInfo);
 
     public static byte[] SerializeWelcome(LatestText? latest)
     {
         var message = new WelcomeMessage("welcome", ProtocolVersion, latest);
-        return SerializeMessage(message, ServerJsonContext.Default.WelcomeMessage);
+        return SerializeMessage(message, ServerJsonContext.Configured.WelcomeMessage);
     }
 
     public static byte[] SerializeClip(string id, LatestText latest)
@@ -185,25 +203,25 @@ public static class Protocol
             latest.FromClientId,
             latest.FromClientName,
             latest.UpdatedAtUtc);
-        return SerializeMessage(message, ServerJsonContext.Default.ClipMessage);
+        return SerializeMessage(message, ServerJsonContext.Configured.ClipMessage);
     }
 
     public static byte[] SerializeClipAck(string id, LatestText latest)
     {
         var message = new ClipAckMessage("clip_ack", id, latest.Version, latest.UpdatedAtUtc);
-        return SerializeMessage(message, ServerJsonContext.Default.ClipAckMessage);
+        return SerializeMessage(message, ServerJsonContext.Configured.ClipAckMessage);
     }
 
     public static byte[] SerializePing(DateTimeOffset nowUtc) =>
-        SerializeMessage(new PingMessage("ping", nowUtc), ServerJsonContext.Default.PingMessage);
+        SerializeMessage(new PingMessage("ping", nowUtc), ServerJsonContext.Configured.PingMessage);
 
     public static byte[] SerializeBye(string reason = "server_shutdown") =>
-        SerializeMessage(new ByeMessage("bye", reason), ServerJsonContext.Default.ByeMessage);
+        SerializeMessage(new ByeMessage("bye", reason), ServerJsonContext.Configured.ByeMessage);
 
     public static byte[] SerializeProtocolError(ProtocolError error) =>
         SerializeMessage(
             new ProtocolErrorMessage("error", error.CodeName, error.Message, error.ReferenceId),
-            ServerJsonContext.Default.ProtocolErrorMessage);
+            ServerJsonContext.Configured.ProtocolErrorMessage);
 
     public static byte[] SerializeLoginResponse(AuthToken token, bool needsRehash = false)
     {
