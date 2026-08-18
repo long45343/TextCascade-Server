@@ -16,9 +16,7 @@ public static class Cli
     {
         if (args.Length == 0 || args[0] != "user")
         {
-            Console.Error.WriteLine("Usage: TextCascade.Server user <command> [options]");
-            Console.Error.WriteLine("Commands: add, passwd, disable, enable, delete, revoke-tokens, list, hash");
-            return Error;
+            return PrintUsage();
         }
 
         hasher ??= new Argon2PasswordHasher();
@@ -48,6 +46,7 @@ public static class Cli
     {
         Console.Error.WriteLine("Usage: TextCascade.Server user <command> [options]");
         Console.Error.WriteLine("Commands: add, passwd, disable, enable, delete, revoke-tokens, list, hash");
+        Console.Error.WriteLine("Password commands accept --password-stdin (reads one line from stdin).");
         return Error;
     }
 
@@ -59,8 +58,8 @@ public static class Cli
             return Error;
         }
 
-        var password = ReadPassword("Password: ");
-        var confirm = ReadPassword("Confirm: ");
+        var password = ReadPassword("Password: ", args);
+        var confirm = HasPasswordStdin(args) ? password : ReadPassword("Confirm: ", args);
         if (!string.Equals(password, confirm, StringComparison.Ordinal))
         {
             Console.Error.WriteLine("Passwords do not match.");
@@ -109,7 +108,7 @@ public static class Cli
             return Error;
         }
 
-        var password = ReadPassword("New password: ");
+        var password = ReadPassword("New password: ", args);
         var hash = hasher.Hash(password, CreateArgon2Config(config));
         users.Users[index] = users.Users[index] with { PasswordHash = hash };
         UsersFile.SaveUsers(usersPath, users);
@@ -212,7 +211,7 @@ public static class Cli
 
     private static int CommandHashPassword(string[] args, IPasswordHasher hasher)
     {
-        var password = ReadPassword("Password: ");
+        var password = ReadPassword("Password: ", args);
         var config = Config.CreateDefaultConfig();
         var hash = hasher.Hash(password, CreateArgon2Config(config));
         Console.WriteLine(hash);
@@ -259,8 +258,28 @@ public static class Cli
         return false;
     }
 
-    private static string ReadPassword(string prompt)
+    internal static bool HasPasswordStdin(string[] args) => HasFlag(args, "password-stdin");
+
+    private static bool HasFlag(string[] args, string name)
     {
+        var flag = $"--{name}";
+        return args.Any(arg => string.Equals(arg, flag, StringComparison.Ordinal));
+    }
+
+    internal static string ReadPassword(string prompt, string[] args)
+    {
+        if (HasPasswordStdin(args))
+        {
+            var line = Console.In.ReadLine();
+            if (string.IsNullOrEmpty(line))
+            {
+                Console.Error.WriteLine("--password-stdin requires one non-empty line.");
+                throw new ArgumentException("--password-stdin requires one non-empty line.");
+            }
+
+            return line;
+        }
+
         Console.Write(prompt);
         var builder = new StringBuilder();
         while (true)
