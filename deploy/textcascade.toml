@@ -1,0 +1,7 @@
+[server]
+bind = "0.0.0.0"
+port = 8443
+certificate_path = "/etc/cert/test.pem"
+
+[files]
+users_file = "/etc/textcascade/users.json"
