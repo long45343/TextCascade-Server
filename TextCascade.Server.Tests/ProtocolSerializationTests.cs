@@ -12,7 +12,7 @@ public class ProtocolSerializationTests
         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(1760000000123).ToUniversalTime();
         var latest = new LatestText("payload", 7, "hash", true, "client", "name", timestamp);
 
-        var json = Encoding.UTF8.GetString(Protocol.SerializeWelcome(latest));
+        var json = Encoding.UTF8.GetString(Protocol.SerializeWelcome(latest, TextCascade.Server.Config.CreateDefaultConfig().Limits));
 
         using var document = JsonDocument.Parse(json);
         var actual = document.RootElement.GetProperty("latest").GetProperty("updatedAtUtc").GetString();

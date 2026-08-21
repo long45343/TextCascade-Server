@@ -48,6 +48,18 @@ public class ClipAndCoreTests
     }
 
     [Fact]
+    public void SeenIdRingTreatsSameIdWithChangedContentAsNewClip()
+    {
+        var ring = new SeenIdRing(4);
+        var original = new LatestText("first", 1, "hash-1", false, "client", "name", DateTimeOffset.UtcNow);
+        ring.RememberId("same-id", original);
+
+        Assert.False(ring.IsUnchangedDuplicate("same-id", "second", "hash-2", false, out _));
+        Assert.True(ring.IsUnchangedDuplicate("same-id", "first", "hash-1", false, out var unchanged));
+        Assert.Equal(original, unchanged);
+    }
+
+    [Fact]
     public void TokenBucketRefillsOverTime()
     {
         var now = DateTimeOffset.FromUnixTimeSeconds(1760000000);

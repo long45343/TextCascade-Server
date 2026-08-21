@@ -5,6 +5,8 @@ namespace TextCascade.Server.Tests;
 
 public class ProtocolParseTests
 {
+    private const string ValidHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     private static RuntimeConfig NewConfig() => TextCascade.Server.Config.CreateDefaultConfig();
 
     private static ParseResult Parse(string json) =>
@@ -13,7 +15,7 @@ public class ProtocolParseTests
     [Fact]
     public void ParsesHello()
     {
-        var result = Parse("{\"type\":\"hello\",\"clientId\":\"a\",\"clientName\":\"n\",\"lastServerVersion\":5,\"snapshot\":{\"payload\":\"p\",\"encrypted\":true,\"hash\":\"h\",\"localModifiedAtUtc\":\"2026-08-18T08:00:00Z\"}}");
+        var result = Parse($"{{\"type\":\"hello\",\"clientId\":\"a\",\"clientName\":\"n\",\"lastServerVersion\":5,\"snapshot\":{{\"payload\":\"p\",\"encrypted\":true,\"hash\":\"{ValidHash}\",\"localModifiedAtUtc\":\"2026-08-18T08:00:00Z\"}}}}");
 
         Assert.True(result.IsSuccess);
         Assert.Equal(MessageKind.Hello, result.Kind);
@@ -26,7 +28,7 @@ public class ProtocolParseTests
     [Fact]
     public void ParsesClip()
     {
-        var result = Parse("{\"type\":\"clip\",\"id\":\"id1\",\"payload\":\"p\",\"encrypted\":true,\"hash\":\"h\"}");
+        var result = Parse($"{{\"type\":\"clip\",\"id\":\"id1\",\"payload\":\"p\",\"encrypted\":true,\"hash\":\"{ValidHash}\"}}");
 
         Assert.True(result.IsSuccess);
         Assert.Equal(MessageKind.Clip, result.Kind);

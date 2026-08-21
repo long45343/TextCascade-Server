@@ -5,3 +5,4 @@ certificate_path = "/etc/cert/test.pem"
 
 [files]
 users_file = "/etc/textcascade/users.json"
+state_file = "/var/lib/textcascade/textcascade.state.json"

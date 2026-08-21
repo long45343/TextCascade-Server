@@ -64,7 +64,7 @@ TextCascade-Server/
 
 3. **添加用户**
    ```
-   dotnet TextCascade.Server.dll user add --username alice
+   dotnet TextCascade.Server.dll user add --config /etc/textcascade/textcascade.toml --username alice
    ```
    CLI 子命令:`add`、`passwd`、`disable`、`enable`、`delete`、`revoke-tokens`、`list`、`hash`。
 
@@ -115,6 +115,7 @@ users_file = "users.json"
 
 关键规则:
 - `token_secret_env` 指向环境变量名,secret 不写入 TOML;长度 < 32 字节则启动失败。
+- CLI 配置回退顺序为 `--config`、`TEXTCASCADE_CONFIG`、当前目录 `textcascade.toml`;`TEXTCASCADE_USERS_FILE` 与 `TEXTCASCADE_STATE_FILE` 仍可覆盖 TOML。
 - TLS 始终启用;证书仅支持无密码格式(PEM bundle 或无密码 PFX),带密码 PFX 不支持。
 - `max_frame_bytes` 必须大于 `max_text_bytes`(差额留给协议头)。
 - 所有容量与时间配置必须 > 0,心跳超时必须大于心跳间隔。
@@ -158,8 +159,9 @@ GitHub Release 提供两种 Framework-dependent 单文件包,目标机需预装 
 ### 生产部署(systemd)
 
 参考 `deploy/textcascade-server.service`:
+- 以专用系统用户 `textcascade` 运行;先执行 `useradd --system --home /opt/textcascade-server --shell /usr/sbin/nologin textcascade`。
 - 以 systemd 托管,`Restart=on-failure`,开启 `ProtectSystem`/`ProtectHome`/`PrivateTmp` 等加固项。
-- 配置与 users.json 放 `/etc/textcascade/`,程序放 `/opt/textcascade-server/`。
+- 配置与 users.json 放 `/etc/textcascade/`,运行状态放 `/var/lib/textcascade/`,程序放 `/opt/textcascade-server/`;目录属主设为 `textcascade:textcascade`。
 - token secret 由 `/etc/textcascade/textcascade.env` 注入。
 
 ### 许可
@@ -210,7 +212,7 @@ Built on ASP.NET Core Minimal API with native Kestrel WebSockets, TLS-terminated
 
 3. **Add a user**
    ```
-   dotnet TextCascade.Server.dll user add --username alice
+   dotnet TextCascade.Server.dll user add --config /etc/textcascade/textcascade.toml --username alice
    ```
    CLI subcommands: `add`, `passwd`, `disable`, `enable`, `delete`, `revoke-tokens`, `list`, `hash`.
 
@@ -257,10 +259,13 @@ clip_tokens_per_second = 2
 
 [files]
 users_file = "users.json"
+state_file = "textcascade.state.json"
+state_file = "textcascade.state.json"
 ```
 
 Key rules:
 - `token_secret_env` names an env var; the secret is never written to TOML and must be >= 32 bytes.
+- CLI config fallback is `--config`, then `TEXTCASCADE_CONFIG`, then `textcascade.toml`; `TEXTCASCADE_USERS_FILE` and `TEXTCASCADE_STATE_FILE` still override TOML.
 - TLS is always on; only password-less certs are supported (PEM bundle or password-less PFX).
 - `max_frame_bytes` must exceed `max_text_bytes` (the difference covers the JSON header).
 - All capacity/time values must be > 0; heartbeat timeout must exceed the interval.
@@ -304,8 +309,9 @@ Pushing a `v*.*.*` tag (for example `v0.2.0`) runs tests, builds both single-fil
 ### Production (systemd)
 
 See `deploy/textcascade-server.service`:
+- Run as the dedicated `textcascade` system user; create it with `useradd --system --home /opt/textcascade-server --shell /usr/sbin/nologin textcascade`.
 - Managed by systemd with `Restart=on-failure` and hardening flags (`ProtectSystem`, `ProtectHome`, `PrivateTmp`).
-- Config and `users.json` under `/etc/textcascade/`; binaries under `/opt/textcascade-server/`.
+- Config and `users.json` under `/etc/textcascade/`, runtime state under `/var/lib/textcascade/`, and binaries under `/opt/textcascade-server/`; set directory ownership to `textcascade:textcascade`.
 - Token secret injected via `/etc/textcascade/textcascade.env`.
 
 ### License
