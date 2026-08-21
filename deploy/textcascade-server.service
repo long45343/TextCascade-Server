@@ -5,11 +5,13 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=textcascade
+Group=textcascade
 WorkingDirectory=/opt/textcascade-server
 EnvironmentFile=/etc/textcascade/textcascade.env
-ExecStart=/usr/bin/dotnet /opt/textcascade-server/TextCascade.Server.dll serve --config /etc/textcascade/textcascade.toml
+ExecStart=/opt/textcascade-server/TextCascade.Server serve --config /etc/textcascade/textcascade.toml
+StateDirectory=textcascade
+ConfigurationDirectory=textcascade
 Restart=on-failure
 RestartSec=5s
 UMask=0077

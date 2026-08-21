@@ -7,10 +7,10 @@ namespace TextCascade.Server;
 
 public sealed class AuthService
 {
-    public static async Task HandleLoginAsync(HttpContext context, RuntimeConfig config, ILogger? logger = null)
+    public static async Task HandleLoginAsync(HttpContext context, RuntimeConfig config, SyncServer syncServer, ILogger? logger = null)
     {
-        var limiter = SyncServer.Instance.LoginLimiter;
-        var clock = SyncServer.Instance.Clock;
+        var limiter = syncServer.LoginLimiter;
+        var clock = syncServer.Clock;
         var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         var now = clock.UtcNow;
 
@@ -32,9 +32,9 @@ public sealed class AuthService
             return;
         }
 
-        var userLookup = SyncServer.Instance.UserLookup;
+        var userLookup = syncServer.UserLookup;
         var found = userLookup.TryGetValue(request.Username, out var user);
-        var passwordOk = found && user is not null && SyncServer.Instance.Hasher.Verify(request.Password, user.PasswordHash);
+        var passwordOk = found && user is not null && syncServer.Hasher.Verify(request.Password, user.PasswordHash);
         if (!passwordOk)
         {
             logger?.LogSecurityEvent("login", ("username", request.Username), ("ip", ip), ("success", false), ("reason", "invalid_credentials"));
@@ -55,7 +55,7 @@ public sealed class AuthService
 
         // Spec §4.1: on parameter drift, emit a structured rehash warning rather than rewriting users.json.
         bool needsRehash = false;
-        if (SyncServer.Instance.Hasher.NeedsRehash(authenticatedUser.PasswordHash, Cli.CreateArgon2Config(config)))
+        if (syncServer.Hasher.NeedsRehash(authenticatedUser.PasswordHash, Cli.CreateArgon2Config(config)))
         {
             needsRehash = true;
             logger?.LogWarning("Argon2 password hash needs rehash for user {Username}; users.json was not rewritten.", authenticatedUser.Username);
@@ -63,7 +63,7 @@ public sealed class AuthService
 
         var tokenService = new TokenService(config.TokenSecret!);
         var token = tokenService.CreateToken(authenticatedUser, now, TimeSpan.FromDays(config.Auth.TokenTtlDays));
-        var bytes = Protocol.SerializeLoginResponse(token, needsRehash);
+        var bytes = Protocol.SerializeLoginResponse(token, config, needsRehash);
         context.Response.StatusCode = 200;
         context.Response.ContentType = "application/json";
         await context.Response.BodyWriter.WriteAsync(bytes);

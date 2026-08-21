@@ -178,6 +178,29 @@ public sealed class SeenIdRing
         }
     }
 
+    public bool IsUnchangedDuplicate(string id, string payload, string hash, bool encrypted, out LatestText? latest)
+    {
+        lock (gate)
+        {
+            for (var index = 0; index < ids.Length; index++)
+            {
+                if (!string.Equals(ids[index], id, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                latest = results[index];
+                return latest is not null
+                    && string.Equals(latest.Payload, payload, StringComparison.Ordinal)
+                    && string.Equals(latest.Hash, hash, StringComparison.Ordinal)
+                    && latest.Encrypted == encrypted;
+            }
+
+            latest = null;
+            return false;
+        }
+    }
+
     private void RememberInternal(string id, LatestText? result)
     {
         ids[next] = id;

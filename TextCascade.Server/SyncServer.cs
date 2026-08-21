@@ -123,6 +123,7 @@ public sealed class UserHub
     public TokenBucket ClipBucket { get; }
     public SeenIdRing SeenIds { get; }
     public DateTimeOffset ProcessStartTime { get; }
+    public DateTimeOffset LastActivityAt => new(new DateTime(Interlocked.Read(ref lastActivityTicks), DateTimeKind.Utc));
 
     private readonly object connectionsGate = new();
     private readonly List<ConnectionContext> connections = new();
@@ -135,15 +136,22 @@ public sealed class UserHub
     private readonly List<RecoveryClip> recoveryQueue = new();
     private bool recoveryWindowClosed;
 
-    public UserHub(string username, RuntimeConfig config, DateTimeOffset processStart)
+    private readonly SyncServer server;
+    private readonly RuntimeStateStore runtimeStateStore;
+    private long lastActivityTicks;
+
+    public UserHub(string username, RuntimeConfig config, DateTimeOffset processStart, SyncServer server, ulong initialVersion)
     {
         Username = username;
         this.config = config;
+        this.server = server;
+        this.runtimeStateStore = server.RuntimeStateStore;
         ProcessStartTime = processStart;
         UserChannel = Channel.CreateUnbounded<UserJob>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
         ClipBucket = new TokenBucket(config.RateLimit.ClipBurst, config.RateLimit.ClipTokensPerSecond, processStart);
         SeenIds = new SeenIdRing(config.Limits.SeenIdCapacity);
-        Version = 0;
+        Version = initialVersion;
+        lastActivityTicks = processStart.UtcTicks;
     }
 
     public IReadOnlyList<ConnectionContext> Connections
@@ -156,13 +164,18 @@ public sealed class UserHub
         get { lock (connectionsGate) { return connections.Count == 0; } }
     }
 
+    internal object ScanGate => connectionsGate;
+    internal List<ConnectionContext> ConnectionList => connections;
+    internal RuntimeConfig Config => config;
+
     public void AddConnection(ConnectionContext connection)
     {
         lock (connectionsGate) { connections.Add(connection); }
+        MarkActivity(DateTimeOffset.UtcNow);
         var nowUtc = DateTimeOffset.UtcNow;
         if (recoveryWindowClosed)
         {
-            BroadcastToConnection(connection, Protocol.SerializeWelcome(Latest));
+                BroadcastToConnection(connection, Protocol.SerializeWelcome(Latest, config.Limits));
             return;
         }
 
@@ -175,18 +188,32 @@ public sealed class UserHub
 
     public bool RemoveConnection(ConnectionContext connection)
     {
-        lock (connectionsGate) { return connections.Remove(connection); }
+        bool removed;
+        lock (connectionsGate) { removed = connections.Remove(connection); }
+        if (removed)
+        {
+            MarkActivity(DateTimeOffset.UtcNow);
+        }
+
+        return removed;
     }
 
-    public void StartIfIdle(Func<UserHub, Task> processor)
+    public void StartIfIdle()
     {
         if (userLoop is null || userLoop.IsCompleted)
         {
             userLoop = Task.Run(async () =>
             {
-                try { await processor(this); }
+                try { await RunUserLoopAsync(); }
                 catch (OperationCanceledException) { }
-                catch (Exception) { }
+                catch (Exception exception)
+                {
+                    server.Logger.LogError(
+                        exception,
+                        "User loop failed; rebuilding hub. username={Username}",
+                        Username);
+                    server.RebuildHub(this);
+                }
             });
         }
     }
@@ -223,7 +250,7 @@ public sealed class UserHub
                 }
                 break;
             case DisconnectJob disconnectJob:
-                SyncServer.Instance.CancelConnection(disconnectJob.Connection, disconnectJob.Reason);
+                server.CancelConnection(disconnectJob.Connection, disconnectJob.Reason);
                 break;
         }
     }
@@ -271,8 +298,21 @@ public sealed class UserHub
             winner = CoreLogic.SelectSnapshotWinner(snapshotCandidates);
             if (winner is not null)
             {
-                Version = winner.Version;
-                Latest = new LatestText(winner.Snapshot.Payload, winner.Version, winner.Snapshot.Hash, winner.Snapshot.Encrypted, winner.ClientId, winner.ClientName, winner.Snapshot.LocalModifiedAtUtc);
+                var canRestoreLatest = winner.Version > Version
+                    || (winner.Version == Version && Latest is null);
+                if (!canRestoreLatest)
+                {
+                    winner = null;
+                }
+                else
+                {
+                    if (winner.Version > Version)
+                    {
+                        runtimeStateStore.SaveVersion(Username, winner.Version);
+                    }
+                    Version = winner.Version;
+                    Latest = new LatestText(winner.Snapshot.Payload, winner.Version, winner.Snapshot.Hash, winner.Snapshot.Encrypted, winner.ClientId, winner.ClientName, winner.Snapshot.LocalModifiedAtUtc);
+                }
             }
             clips = recoveryQueue.ToList();
             recoveryQueue.Clear();
@@ -287,12 +327,14 @@ public sealed class UserHub
         BroadcastWelcome(nowUtc);
 
         // Spec §6.2: empty hubs that survived until the recovery window closes are now removed.
-        SyncServer.Instance.Registry.RemoveIfEmpty(this, allowDuringRecovery: true);
+        server.Registry.RemoveIfEmpty(this, allowDuringRecovery: true);
+
+        MarkActivity(nowUtc);
     }
 
     private void BroadcastWelcome(DateTimeOffset nowUtc)
     {
-        var bytes = Protocol.SerializeWelcome(Latest);
+        var bytes = Protocol.SerializeWelcome(Latest, config.Limits);
         foreach (var connection in Connections)
         {
             if (!connection.State.TryEnqueueSend(bytes) && connection.State.MarkClosed())
@@ -315,9 +357,16 @@ public sealed class UserHub
         }
     }
 
+    private void MarkActivity(DateTimeOffset nowUtc)
+    {
+        Interlocked.Exchange(ref lastActivityTicks, nowUtc.UtcTicks);
+    }
+
+    internal void MarkActivityForScan(DateTimeOffset nowUtc) => MarkActivity(nowUtc);
+
     public void ApplyClip(ClientClip clip, ConnectionContext sender, DateTimeOffset nowUtc)
     {
-        if (SeenIds.TryGetResult(clip.Id, out var duplicateLatest))
+        if (SeenIds.IsUnchangedDuplicate(clip.Id, clip.Payload, clip.Hash, clip.Encrypted, out var duplicateLatest))
         {
             var ackBytes = Protocol.SerializeClipAck(clip.Id, duplicateLatest ?? Latest ?? new LatestText(string.Empty, Version, string.Empty, false, sender.ClientId, sender.ClientName, nowUtc));
             if (!sender.State.TryEnqueueSend(ackBytes) && sender.State.MarkClosed())
@@ -327,9 +376,19 @@ public sealed class UserHub
             return;
         }
 
+        if (SeenIds.TryGetResult(clip.Id, out _))
+        {
+            server.Logger.LogWarning(
+                "Replacing reused clip id. username={Username} clipId={ClipId} clientId={ClientId} previousVersion={PreviousVersion}",
+                Username,
+                clip.Id,
+                sender.ClientId,
+                Version);
+        }
+
         if (!ClipBucket.TryAcquire(nowUtc))
         {
-            SyncServer.Instance.Logger?.LogSecurityEvent("reject",
+            server.Logger.LogSecurityEvent("reject",
                 ("username", Username),
                 ("code", "rate_limited"),
                 ("bytes", Encoding.UTF8.GetByteCount(clip.Payload)));
@@ -342,51 +401,43 @@ public sealed class UserHub
         }
 
         var next = CoreLogic.NextVersion(Version);
+        runtimeStateStore.SaveVersion(Username, next);
         Version = next;
         var latest = new LatestText(clip.Payload, next, clip.Hash, clip.Encrypted, sender.ClientId, sender.ClientName, nowUtc);
         Latest = latest;
         SeenIds.RememberId(clip.Id, latest);
-        SyncServer.Instance.Logger?.LogSecurityEvent("clip",
+            server.Logger.LogSecurityEvent("clip",
             ("username", Username),
             ("version", latest.Version),
+            ("clipId", clip.Id),
             ("bytes", Encoding.UTF8.GetByteCount(clip.Payload)),
             ("fromClientId", sender.ClientId),
             ("encrypted", clip.Encrypted));
 
         var broadcastBytes = Protocol.SerializeClip(clip.Id, latest);
+        var deliveries = new List<string>();
         foreach (var connection in Connections)
         {
             if (ReferenceEquals(connection, sender)) continue;
-            if (!connection.State.TryEnqueueSend(broadcastBytes) && connection.State.MarkClosed())
+            var queued = connection.State.TryEnqueueSend(broadcastBytes);
+            deliveries.Add($"{connection.ClientId}:{(queued ? "queued" : "full")}");
+            if (!queued && connection.State.MarkClosed())
             {
                 connection.State.Cts.Cancel();
             }
         }
+
+        server.Logger.LogInformation(
+            "Clip broadcast. username={Username} version={Version} clipId={ClipId} recipients=[{Recipients}]",
+            Username,
+            next,
+            clip.Id,
+            string.Join(",", deliveries));
 
         var ackBytesFinal = Protocol.SerializeClipAck(clip.Id, latest);
         if (!sender.State.TryEnqueueSend(ackBytesFinal) && sender.State.MarkClosed())
         {
             sender.State.Cts.Cancel();
-        }
-    }
-
-    public void EnqueuePing(DateTimeOffset nowUtc)
-    {
-        var bytes = Protocol.SerializePing(nowUtc);
-        foreach (var connection in Connections)
-        {
-            if (!connection.State.HelloReceived
-                || nowUtc - connection.State.LastPingAt < TimeSpan.FromSeconds(config.Limits.HeartbeatIntervalSeconds))
-            {
-                continue;
-            }
-
-            connection.State.LastPingAt = nowUtc;
-            connection.State.MarkPingAwaitingPong();
-            if (!connection.State.TryEnqueueSend(bytes) && connection.State.MarkClosed())
-            {
-                connection.State.Cts.Cancel();
-            }
         }
     }
 
@@ -448,6 +499,11 @@ public sealed class UserRegistry
         if (!allowDuringRecovery && hub.IsRecoveryWindowOpen(DateTimeOffset.UtcNow)) return;
         hubs.TryRemove(hub.Username, out _);
     }
+
+    public bool Remove(UserHub hub)
+    {
+        return hubs.TryRemove(new KeyValuePair<string, UserHub>(hub.Username, hub));
+    }
 }
 
 public interface IClock
@@ -462,54 +518,108 @@ public sealed class SystemClock : IClock
 
 public sealed class SyncServer
 {
-    public static SyncServer Instance { get; } = new();
-
-    private UserRegistry registry = new();
+    private readonly UserRegistry registry = new();
     private readonly List<ConnectionContext> pendingHellos = new();
     private readonly object pendingGate = new();
+    private readonly IPasswordHasher hasher;
+    private readonly IClock clock;
+    private readonly RuntimeStateStore runtimeStateStore;
+    private readonly IReadOnlyDictionary<string, UserRecord> userLookup;
 
     public UserRegistry Registry => registry;
-    public IPasswordHasher Hasher { get; set; } = new Argon2PasswordHasher();
+    public IPasswordHasher Hasher => hasher;
     public SlidingWindowLoginLimiter LoginLimiter { get; } = new();
-    public IClock Clock { get; set; } = new SystemClock();
-    public ILogger? Logger { get; set; }
-    public IReadOnlyDictionary<string, UserRecord> UserLookup { get; set; } = new Dictionary<string, UserRecord>(StringComparer.Ordinal);
-    public DateTimeOffset ProcessStartTime { get; set; } = DateTimeOffset.UtcNow;
-    public RuntimeConfig Config { get; private set; } = TextCascade.Server.Config.CreateDefaultConfig();
+    public IClock Clock => clock;
+    public ILogger<SyncServer> Logger { get; }
+    public IReadOnlyDictionary<string, UserRecord> UserLookup => userLookup;
+    public DateTimeOffset ProcessStartTime { get; }
+    public RuntimeConfig Config { get; }
+    public RuntimeStateStore RuntimeStateStore => runtimeStateStore;
 
-    public void Initialize(RuntimeConfig config, UsersFile users)
+    public SyncServer(
+        RuntimeConfig config,
+        UsersFile users,
+        RuntimeStateStore runtimeStateStore,
+        IPasswordHasher hasher,
+        IClock clock,
+        ILogger<SyncServer> logger)
     {
         Config = config;
-        registry = new UserRegistry();
-        UserLookup = UsersFile.BuildUserLookup(users);
-        ProcessStartTime = DateTimeOffset.UtcNow;
+        userLookup = UsersFile.BuildUserLookup(users);
+        this.runtimeStateStore = runtimeStateStore;
+        this.hasher = hasher;
+        this.clock = clock;
+        Logger = logger;
+        ProcessStartTime = clock.UtcNow;
     }
 
     public UserHub GetOrCreateHub(string username, RuntimeConfig runtimeConfig)
     {
-        var hub = registry.GetOrAdd(username, name => new UserHub(name, runtimeConfig, ProcessStartTime));
-        hub.StartIfIdle(hub => hub.RunUserLoopAsync());
+        var initialVersion = runtimeStateStore.GetVersion(username);
+        var hub = registry.GetOrAdd(username, name => new UserHub(name, runtimeConfig, ProcessStartTime, this, initialVersion));
+        hub.StartIfIdle();
         return hub;
     }
 
     public void ScanHeartbeats(DateTimeOffset nowUtc)
     {
-        var timeout = RuntimeConfigAccessor.Current?.Limits.HeartbeatTimeoutSeconds ?? 60;
+        var timeout = Config.Limits.HeartbeatTimeoutSeconds;
         foreach (var pair in registry.All)
         {
-            pair.Value.EnqueuePing(nowUtc);
-            foreach (var connection in pair.Value.Connections)
+            var hub = pair.Value;
+            List<ConnectionContext>? timedOut = null;
+            lock (hub.ScanGate)
             {
-                if (!connection.State.HelloReceived && connection.State.HelloDeadline is { } deadline && nowUtc >= deadline)
+                var pingInterval = TimeSpan.FromSeconds(hub.Config.Limits.HeartbeatIntervalSeconds);
+                var pingBytes = Protocol.SerializePing(nowUtc);
+                for (var index = hub.ConnectionList.Count - 1; index >= 0; index--)
                 {
-                    EnqueueHelloTimeout(connection);
-                    continue;
+                    var connection = hub.ConnectionList[index];
+                    if (!connection.State.HelloReceived && connection.State.HelloDeadline is { } deadline && nowUtc >= deadline)
+                    {
+                        timedOut ??= new List<ConnectionContext>();
+                        timedOut.Add(connection);
+                        continue;
+                    }
+
+                    if (connection.State.HelloReceived && nowUtc - connection.State.LastPingAt >= pingInterval)
+                    {
+                        connection.State.LastPingAt = nowUtc;
+                        connection.State.MarkPingAwaitingPong();
+                        if (!connection.State.TryEnqueueSend(pingBytes) && connection.State.MarkClosed())
+                        {
+                            connection.State.Cts.Cancel();
+                        }
+                    }
+
+                    if (nowUtc - connection.State.LastSeen >= TimeSpan.FromSeconds(timeout))
+                    {
+                        timedOut ??= new List<ConnectionContext>();
+                        timedOut.Add(connection);
+                    }
+
+                    hub.MarkActivityForScan(nowUtc);
                 }
-                var elapsed = nowUtc - connection.State.LastSeen;
-                if (elapsed.TotalSeconds >= timeout)
+            }
+
+            if (timedOut is not null)
+            {
+                foreach (var connection in timedOut)
                 {
-                    CancelConnection(connection, "heartbeat_timeout");
+                    if (!connection.State.HelloReceived)
+                    {
+                        EnqueueHelloTimeout(connection);
+                    }
+                    else
+                    {
+                        CancelConnection(connection, "heartbeat_timeout");
+                    }
                 }
+            }
+
+            if (hub.IsEmpty && nowUtc - hub.LastActivityAt >= TimeSpan.FromMinutes(10))
+            {
+                registry.RemoveIfEmpty(hub, allowDuringRecovery: false);
             }
         }
 
@@ -529,6 +639,21 @@ public sealed class SyncServer
         {
             EnqueueHelloTimeout(connection);
         }
+    }
+
+    public void RebuildHub(UserHub hub)
+    {
+        if (!registry.Remove(hub))
+        {
+            return;
+        }
+
+        foreach (var connection in hub.Connections)
+        {
+            CancelConnection(connection, "user_loop_failed");
+        }
+
+        Registry.RemoveIfEmpty(hub, allowDuringRecovery: true);
     }
 
     public void RegisterPendingHello(ConnectionContext connection)
@@ -552,7 +677,7 @@ public sealed class SyncServer
         _ = CloseAfterHelloTimeoutAsync(connection);
     }
 
-    private static async Task CloseAfterHelloTimeoutAsync(ConnectionContext connection)
+    private async Task CloseAfterHelloTimeoutAsync(ConnectionContext connection)
     {
         try
         {
@@ -566,11 +691,11 @@ public sealed class SyncServer
         }
         catch (Exception)
         {
-            Instance.EnqueueImmediateClose(connection, "server_busy");
+            EnqueueImmediateClose(connection, "server_busy");
         }
         finally
         {
-            Instance.CancelConnection(connection, "hello_timeout");
+            CancelConnection(connection, "hello_timeout");
         }
     }
 
@@ -582,7 +707,7 @@ public sealed class SyncServer
         connection.Hub?.RemoveConnection(connection);
         if (connection.Hub is not null)
         {
-            Logger?.LogSecurityEvent("disconnect",
+            Logger.LogSecurityEvent("disconnect",
                 ("username", connection.Username),
                 ("clientId", connection.ClientId),
                 ("connectionId", connection.ConnectionId),
@@ -646,7 +771,7 @@ public sealed class SyncServer
 
 public static class SyncEndpoint
 {
-    public static async Task HandleAsync(HttpContext context, RuntimeConfig config)
+    public static async Task HandleAsync(HttpContext context, RuntimeConfig config, SyncServer server)
     {
         var tokenHeader = context.Request.Headers.Authorization.ToString();
         if (!tokenHeader.StartsWith("Bearer ", StringComparison.Ordinal))
@@ -658,7 +783,7 @@ public static class SyncEndpoint
         var compactToken = tokenHeader["Bearer ".Length..];
         var now = DateTimeOffset.UtcNow;
         var tokenService = new TokenService(config.TokenSecret!);
-        if (!tokenService.TryVerifyToken(compactToken, now, SyncServer.Instance.UserLookup, out var payload))
+        if (!tokenService.TryVerifyToken(compactToken, now, server.UserLookup, out var payload))
         {
             context.Response.StatusCode = 401;
             return;
@@ -680,7 +805,7 @@ public static class SyncEndpoint
         using var socket = await context.WebSockets.AcceptWebSocketAsync(subProtocol);
         var connectionId = Guid.NewGuid().ToString("N");
         var provisional = new ConnectionContext(connectionId, payload.Subject, "pending", "pending", socket, null!, config);
-        await ConnectionHandler.RunAsync(provisional, payload, config);
+        await ConnectionHandler.RunAsync(provisional, payload, config, server);
     }
 
     internal static string? SelectSubProtocol(IList<string> requested)
@@ -695,9 +820,9 @@ public static class SyncEndpoint
 
 public static class ConnectionHandler
 {
-    public static async Task RunAsync(ConnectionContext provisional, TokenPayload payload, RuntimeConfig config)
+    public static async Task RunAsync(ConnectionContext provisional, TokenPayload payload, RuntimeConfig config, SyncServer server)
     {
-        SyncServer.Instance.RegisterPendingHello(provisional);
+        server.RegisterPendingHello(provisional);
         ClientHello hello;
         try
         {
@@ -708,7 +833,7 @@ public static class ConnectionHandler
                     WebSocketCloseStatus.NormalClosure,
                     "client_closed",
                     CancellationToken.None);
-                SyncServer.Instance.CancelConnection(provisional, "closed");
+                server.CancelConnection(provisional, "closed");
                 return;
             }
 
@@ -723,7 +848,8 @@ public static class ConnectionHandler
                     provisional,
                     error,
                     WebSocketCloseStatus.PolicyViolation,
-                    "invalid_hello");
+                    "invalid_hello",
+                    server);
                 return;
             }
 
@@ -732,23 +858,23 @@ public static class ConnectionHandler
         catch (FrameTooLargeException)
         {
             var error = Protocol.SerializeProtocolError(new ProtocolError(ProtocolErrorCode.FrameTooLarge, "frame_too_large", null));
-            await SendAndClosePreHelloAsync(provisional, error, WebSocketCloseStatus.MessageTooBig, "frame_too_large");
+            await SendAndClosePreHelloAsync(provisional, error, WebSocketCloseStatus.MessageTooBig, "frame_too_large", server);
             return;
         }
         catch (OperationCanceledException)
         {
             // Hello timeout is owned by the unified heartbeat scanner; here the socket was
             // cancelled for another reason (e.g. shutdown). Fall through to unified cleanup.
-            SyncServer.Instance.CancelConnection(provisional, "cancelled");
+            server.CancelConnection(provisional, "cancelled");
             return;
         }
         catch (WebSocketException)
         {
-            SyncServer.Instance.CancelConnection(provisional, "socket_error");
+            server.CancelConnection(provisional, "socket_error");
             return;
         }
 
-        var hub = SyncServer.Instance.GetOrCreateHub(payload.Subject, config);
+        var hub = server.GetOrCreateHub(payload.Subject, config);
         var connection = new ConnectionContext(
             provisional.ConnectionId,
             payload.Subject,
@@ -758,23 +884,23 @@ public static class ConnectionHandler
             hub,
             config);
         hub.AddConnection(connection);
-        SyncServer.Instance.Logger?.LogSecurityEvent("connect",
+        server.Logger.LogSecurityEvent("connect",
             ("username", connection.Username),
             ("clientId", connection.ClientId),
             ("connectionId", connection.ConnectionId));
         connection.State.HelloReceived = true;
         connection.State.LastSeen = DateTimeOffset.UtcNow;
-        SyncServer.Instance.UnregisterPendingHello(provisional);
+        server.UnregisterPendingHello(provisional);
         if (!hub.TryWriteJob(new HelloJob(connection, hello)))
         {
-            SyncServer.Instance.CancelConnection(connection, "user_loop_unavailable");
+            server.CancelConnection(connection, "user_loop_unavailable");
             return;
         }
 
         var sendTask = ConnectionSendLoopAsync(connection);
-        var readTask = ReadLoopAsync(connection, config);
+        var readTask = ReadLoopAsync(connection, config, server);
         await Task.WhenAll(sendTask, readTask);
-        SyncServer.Instance.CancelConnection(connection, "disconnected");
+        server.CancelConnection(connection, "disconnected");
     }
 
     private static async Task<ReceivedMessage> ReceiveFrameAsync(
@@ -804,7 +930,8 @@ public static class ConnectionHandler
         ConnectionContext connection,
         byte[] error,
         WebSocketCloseStatus status,
-        string reason)
+        string reason,
+        SyncServer server)
     {
         try
         {
@@ -816,39 +943,15 @@ public static class ConnectionHandler
         }
         catch (Exception)
         {
-            SyncServer.Instance.EnqueueImmediateClose(connection, "server_busy");
+            server.EnqueueImmediateClose(connection, "server_busy");
         }
         finally
         {
-            SyncServer.Instance.CancelConnection(connection, reason);
+            server.CancelConnection(connection, reason);
         }
     }
 
-    private static async Task CloseAfterProtocolErrorAsync(
-        ConnectionContext connection,
-        WebSocketCloseStatus status,
-        string reason)
-    {
-        // Give the send loop a short opportunity to flush the queued error frame.
-        await Task.Delay(100);
-        try
-        {
-            if (connection.Socket.State == WebSocketState.Open)
-            {
-                await connection.Socket.CloseAsync(status, reason, CancellationToken.None);
-            }
-        }
-        catch (Exception)
-        {
-            // Cancellation below is still the unified cleanup path.
-        }
-        finally
-        {
-            SyncServer.Instance.CancelConnection(connection, reason);
-        }
-    }
-
-    private static async Task ReadLoopAsync(ConnectionContext connection, RuntimeConfig config)
+    private static async Task ReadLoopAsync(ConnectionContext connection, RuntimeConfig config, SyncServer server)
     {
         try
         {
@@ -862,13 +965,13 @@ public static class ConnectionHandler
                 catch (FrameTooLargeException)
                 {
                     var oversized = Protocol.SerializeProtocolError(new ProtocolError(ProtocolErrorCode.FrameTooLarge, "frame_too_large", null));
-                    await SendSafeAsync(connection, oversized);
+                    await SendSafeAsync(connection, oversized, server);
                     await Task.Delay(100, connection.State.Cts.Token);
                     if (connection.Socket.State == WebSocketState.Open)
                     {
                         await connection.Socket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "frame_too_large", CancellationToken.None);
                     }
-                    SyncServer.Instance.CancelConnection(connection, "frame_too_large");
+                    server.CancelConnection(connection, "frame_too_large");
                     break;
                 }
 
@@ -888,21 +991,21 @@ public static class ConnectionHandler
                 if (!Protocol.CheckFrameSize(received.Payload.Length, config))
                 {
                     var error = Protocol.SerializeProtocolError(new ProtocolError(ProtocolErrorCode.FrameTooLarge, "frame_too_large", null));
-                    await SendSafeAsync(connection, error);
+                    await SendSafeAsync(connection, error, server);
                     await connection.Socket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "frame_too_large", CancellationToken.None);
-                    SyncServer.Instance.CancelConnection(connection, "frame_too_large");
+                    server.CancelConnection(connection, "frame_too_large");
                     break;
                 }
 
                 var parse = Protocol.ParseClientMessage(received.Payload, config);
                 if (!parse.IsSuccess)
                 {
-                    SyncServer.Instance.Logger?.LogSecurityEvent("reject",
+                    server.Logger.LogSecurityEvent("reject",
                         ("username", connection.Username),
                         ("code", parse.Error?.CodeName ?? "invalid_message"),
                         ("bytes", received.Payload.Length));
                     var error = Protocol.SerializeProtocolError(parse.Error!);
-                    await SendSafeAsync(connection, error);
+                    await SendSafeAsync(connection, error, server);
                     continue;
                 }
 
@@ -913,19 +1016,19 @@ public static class ConnectionHandler
                         var hub = connection.Hub;
                         if (hub is null)
                         {
-                            SyncServer.Instance.CancelConnection(connection, "user_loop_unavailable");
+                            server.CancelConnection(connection, "user_loop_unavailable");
                             break;
                         }
 
                         var decision = hub.ClassifyClip(clip, connection);
                         if (decision == RecoveryDecision.QueueFull)
                         {
-                            SyncServer.Instance.CancelConnection(connection, "recovery_queue_full");
+                            server.CancelConnection(connection, "recovery_queue_full");
                         }
                         else if (decision == RecoveryDecision.ProcessNow
                                  && !hub.TryWriteJob(new ClipJob(connection, clip)))
                         {
-                            SyncServer.Instance.CancelConnection(connection, "user_loop_unavailable");
+                            server.CancelConnection(connection, "user_loop_unavailable");
                         }
                         break;
                     case MessageKind.Pong:
@@ -935,13 +1038,13 @@ public static class ConnectionHandler
                                 ProtocolErrorCode.InvalidMessage,
                                 "Pong received without an outstanding ping.",
                                 null));
-                            await SendSafeAsync(connection, unsolicitedPong);
+                            await SendSafeAsync(connection, unsolicitedPong, server);
                             continue;
                         }
 
                         if (connection.Hub is null || !connection.Hub.TryWriteJob(new PongJob(connection, (ClientPong)parse.Message!)))
                         {
-                            SyncServer.Instance.CancelConnection(connection, "user_loop_unavailable");
+                            server.CancelConnection(connection, "user_loop_unavailable");
                         }
                         break;
                 }
@@ -964,11 +1067,11 @@ public static class ConnectionHandler
         catch (WebSocketException) { }
     }
 
-    private static async Task SendSafeAsync(ConnectionContext connection, byte[] payload)
+    private static async Task SendSafeAsync(ConnectionContext connection, byte[] payload, SyncServer server)
     {
         if (!connection.State.TryEnqueueSend(payload))
         {
-            SyncServer.Instance.EnqueueImmediateClose(connection, "server_busy");
+            server.EnqueueImmediateClose(connection, "server_busy");
             return;
         }
     }

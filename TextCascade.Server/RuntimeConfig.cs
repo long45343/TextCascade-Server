@@ -36,7 +36,7 @@ public sealed record RateLimitConfig(
     int ClipBurst,
     int ClipTokensPerSecond);
 
-public sealed record FilesConfig(string UsersFile);
+public sealed record FilesConfig(string UsersFile, string StateFile);
 
 public sealed record RuntimeConfig(
     ServerConfig Server,
@@ -46,17 +46,6 @@ public sealed record RuntimeConfig(
     FilesConfig Files,
     byte[]? TokenSecret = null);
 
-public static class RuntimeConfigAccessor
-{
-    private static RuntimeConfig? current;
-
-    public static RuntimeConfig? Current
-    {
-        get => current;
-        set => current = value;
-    }
-}
-
 public static class Config
 {
     public static RuntimeConfig CreateDefaultConfig() => new(
@@ -64,7 +53,7 @@ public static class Config
         new AuthConfig(30, "TEXTCASCADE_TOKEN_SECRET", 19456, 2, 1),
         new LimitsConfig(524288, 589824, 16, 64, 5, 30, 60, 3, 4194304, 16),
         new RateLimitConfig(10, 5, 10000, 10, 2),
-        new FilesConfig("users.json"));
+        new FilesConfig("users.json", "textcascade.state.json"));
 
     public static RuntimeConfig LoadTomlConfig(string path, RuntimeConfig? defaults = null)
     {
@@ -158,8 +147,13 @@ public static class Config
 
         if (TryGetTable(model, "files", out var files))
         {
-            WarnUnknownKeys(files, "files", new[] { "users_file" });
-            config = config with { Files = new FilesConfig(GetString(files, "users_file", config.Files.UsersFile, "files.users_file")) };
+            WarnUnknownKeys(files, "files", new[] { "users_file", "state_file" });
+            config = config with
+            {
+                Files = new FilesConfig(
+                    GetString(files, "users_file", config.Files.UsersFile, "files.users_file"),
+                    GetString(files, "state_file", config.Files.StateFile, "files.state_file")),
+            };
         }
 
         return config;
@@ -239,6 +233,11 @@ public static class Config
             config = config with { Files = config.Files with { UsersFile = usersFile } };
         }
 
+        if (Environment.GetEnvironmentVariable("TEXTCASCADE_STATE_FILE") is { Length: > 0 } stateFile)
+        {
+            config = config with { Files = config.Files with { StateFile = stateFile } };
+        }
+
         if (Environment.GetEnvironmentVariable(config.Auth.TokenSecretEnv) is { Length: > 0 } secretText)
         {
             var secret = Encoding.UTF8.GetBytes(secretText);
@@ -314,6 +313,11 @@ public static class Config
         if (string.IsNullOrWhiteSpace(config.Files.UsersFile))
         {
             throw new InvalidOperationException("files.users_file must not be empty.");
+        }
+
+        if (string.IsNullOrWhiteSpace(config.Files.StateFile))
+        {
+            throw new InvalidOperationException("files.state_file must not be empty.");
         }
     }
 }

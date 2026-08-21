@@ -185,7 +185,7 @@ public static class Protocol
     public static byte[] SerializeMessage<T>(T message, JsonTypeInfo<T> typeInfo) =>
         JsonSerializer.SerializeToUtf8Bytes(message, typeInfo);
 
-    public static byte[] SerializeWelcome(LatestText? latest)
+    public static byte[] SerializeWelcome(LatestText? latest, LimitsConfig _)
     {
         var message = new WelcomeMessage("welcome", ProtocolVersion, latest);
         return SerializeMessage(message, ServerJsonContext.Configured.WelcomeMessage);
@@ -223,7 +223,7 @@ public static class Protocol
             new ProtocolErrorMessage("error", error.CodeName, error.Message, error.ReferenceId),
             ServerJsonContext.Configured.ProtocolErrorMessage);
 
-    public static byte[] SerializeLoginResponse(AuthToken token, bool needsRehash = false)
+    public static byte[] SerializeLoginResponse(AuthToken token, RuntimeConfig config, bool needsRehash = false)
     {
         using var stream = new MemoryStream();
         using var writer = new Utf8JsonWriter(stream);
@@ -231,10 +231,10 @@ public static class Protocol
         writer.WriteString("token", token.CompactToken);
         writer.WriteString("expiresAtUtc", DateTimeOffset.FromUnixTimeSeconds(token.Payload.ExpiresAtUnix).ToUniversalTime().ToString("O"));
         writer.WriteNumber("protocolVersion", ProtocolVersion);
-        writer.WriteNumber("maxTextBytes", RuntimeConfigAccessor.Current?.Limits.MaxTextBytes ?? 524288);
-        writer.WriteNumber("helloTimeoutSeconds", RuntimeConfigAccessor.Current?.Limits.HelloTimeoutSeconds ?? 5);
-        writer.WriteNumber("heartbeatIntervalSeconds", RuntimeConfigAccessor.Current?.Limits.HeartbeatIntervalSeconds ?? 30);
-        writer.WriteNumber("heartbeatTimeoutSeconds", RuntimeConfigAccessor.Current?.Limits.HeartbeatTimeoutSeconds ?? 60);
+        writer.WriteNumber("maxTextBytes", config.Limits.MaxTextBytes);
+        writer.WriteNumber("helloTimeoutSeconds", config.Limits.HelloTimeoutSeconds);
+        writer.WriteNumber("heartbeatIntervalSeconds", config.Limits.HeartbeatIntervalSeconds);
+        writer.WriteNumber("heartbeatTimeoutSeconds", config.Limits.HeartbeatTimeoutSeconds);
         if (needsRehash)
         {
             writer.WriteBoolean("needsRehash", true);
@@ -422,7 +422,6 @@ public static class Protocol
     {
         return snapshot.Payload.Length > 0
             && Encoding.UTF8.GetByteCount(snapshot.Payload) <= config.Limits.MaxTextBytes
-            && snapshot.Hash.Length > 0
             && Encoding.UTF8.GetByteCount(snapshot.Hash) <= MaxHashBytes
             && snapshot.LocalModifiedAtUtc.Offset == TimeSpan.Zero;
     }

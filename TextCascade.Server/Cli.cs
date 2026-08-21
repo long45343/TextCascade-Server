@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Isopoh.Cryptography.Argon2;
 
 namespace TextCascade.Server;
@@ -28,16 +29,38 @@ public static class Cli
         }
 
         var rest = args.Skip(1).ToArray();
+        if (!TryExtractConfigOption(ref rest, out var configPath))
+        {
+            Console.Error.WriteLine("--config requires a path.");
+            return Error;
+        }
+
+        configPath ??= Environment.GetEnvironmentVariable("TEXTCASCADE_CONFIG") is { Length: > 0 } environmentConfig
+            ? environmentConfig
+            : "textcascade.toml";
+        RuntimeConfig config;
+        try
+        {
+            config = Config.CreateDefaultConfig();
+            config = Config.LoadTomlConfig(configPath, config);
+            config = Config.ApplyEnvironmentOverrides(config);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or JsonException or DecoderFallbackException or IOException)
+        {
+            Console.Error.WriteLine($"Configuration error: {exception.Message}");
+            return Error;
+        }
+
         return rest switch
         {
-            { Length: > 0 } when rest[0] == "add" => CommandAddUser(rest, hasher),
-            { Length: > 0 } when rest[0] == "passwd" => CommandPasswd(rest, hasher),
-            { Length: > 0 } when rest[0] == "disable" => CommandSetDisabled(rest, disabled: true),
-            { Length: > 0 } when rest[0] == "enable" => CommandSetDisabled(rest, disabled: false),
-            { Length: > 0 } when rest[0] == "delete" => CommandDeleteUser(rest),
-            { Length: > 0 } when rest[0] == "revoke-tokens" => CommandRevokeTokens(rest),
-            { Length: > 0 } when rest[0] == "list" => CommandListUsers(rest),
-            { Length: > 0 } when rest[0] == "hash" => CommandHashPassword(rest, hasher),
+            { Length: > 0 } when rest[0] == "add" => CommandAddUser(rest, hasher, config),
+            { Length: > 0 } when rest[0] == "passwd" => CommandPasswd(rest, hasher, config),
+            { Length: > 0 } when rest[0] == "disable" => CommandSetDisabled(rest, disabled: true, config),
+            { Length: > 0 } when rest[0] == "enable" => CommandSetDisabled(rest, disabled: false, config),
+            { Length: > 0 } when rest[0] == "delete" => CommandDeleteUser(rest, config),
+            { Length: > 0 } when rest[0] == "revoke-tokens" => CommandRevokeTokens(rest, config),
+            { Length: > 0 } when rest[0] == "list" => CommandListUsers(rest, config),
+            { Length: > 0 } when rest[0] == "hash" => CommandHashPassword(rest, hasher, config),
             _ => PrintUsage(),
         };
     }
@@ -46,11 +69,40 @@ public static class Cli
     {
         Console.Error.WriteLine("Usage: TextCascade.Server user <command> [options]");
         Console.Error.WriteLine("Commands: add, passwd, disable, enable, delete, revoke-tokens, list, hash");
-        Console.Error.WriteLine("Password commands accept --password-stdin (reads one line from stdin).");
+        Console.Error.WriteLine("All commands accept --config <path>; fallback order is --config, TEXTCASCADE_CONFIG, then textcascade.toml.");
         return Error;
     }
 
-    private static int CommandAddUser(string[] args, IPasswordHasher hasher)
+    private static bool TryExtractConfigOption(ref string[] args, out string? configPath)
+    {
+        configPath = null;
+        var remaining = new List<string>();
+        for (var index = 0; index < args.Length; index++)
+        {
+            if (string.Equals(args[index], "--config", StringComparison.Ordinal))
+            {
+                if (index + 1 >= args.Length)
+                {
+                    return false;
+                }
+
+                configPath = args[++index];
+            }
+            else if (args[index].StartsWith("--config=", StringComparison.Ordinal))
+            {
+                configPath = args[index]["--config=".Length..];
+            }
+            else
+            {
+                remaining.Add(args[index]);
+            }
+        }
+
+        args = remaining.ToArray();
+        return true;
+    }
+
+    private static int CommandAddUser(string[] args, IPasswordHasher hasher, RuntimeConfig config)
     {
         if (!TryGetOption(args, "username", out var username))
         {
@@ -66,7 +118,6 @@ public static class Cli
             return Error;
         }
 
-        var config = Config.CreateDefaultConfig();
         var usersPath = config.Files.UsersFile;
         var users = LoadForWrite(usersPath);
         if (users.Users.Any(user => string.Equals(user.Username, username, StringComparison.Ordinal)))
@@ -90,7 +141,7 @@ public static class Cli
         return Ok;
     }
 
-    private static int CommandPasswd(string[] args, IPasswordHasher hasher)
+    private static int CommandPasswd(string[] args, IPasswordHasher hasher, RuntimeConfig config)
     {
         if (!TryGetOption(args, "username", out var username))
         {
@@ -98,7 +149,6 @@ public static class Cli
             return Error;
         }
 
-        var config = Config.CreateDefaultConfig();
         var usersPath = config.Files.UsersFile;
         var users = LoadForWrite(usersPath);
         var index = users.Users.FindIndex(user => string.Equals(user.Username, username, StringComparison.Ordinal));
@@ -116,7 +166,7 @@ public static class Cli
         return Ok;
     }
 
-    private static int CommandSetDisabled(string[] args, bool disabled)
+    private static int CommandSetDisabled(string[] args, bool disabled, RuntimeConfig config)
     {
         if (!TryGetOption(args, "username", out var username))
         {
@@ -124,7 +174,6 @@ public static class Cli
             return Error;
         }
 
-        var config = Config.CreateDefaultConfig();
         var usersPath = config.Files.UsersFile;
         var users = LoadForWrite(usersPath);
         var index = users.Users.FindIndex(user => string.Equals(user.Username, username, StringComparison.Ordinal));
@@ -140,7 +189,7 @@ public static class Cli
         return Ok;
     }
 
-    private static int CommandDeleteUser(string[] args)
+    private static int CommandDeleteUser(string[] args, RuntimeConfig config)
     {
         if (!TryGetOption(args, "username", out var username))
         {
@@ -148,7 +197,6 @@ public static class Cli
             return Error;
         }
 
-        var config = Config.CreateDefaultConfig();
         var usersPath = config.Files.UsersFile;
         var users = LoadForWrite(usersPath);
         var index = users.Users.FindIndex(user => string.Equals(user.Username, username, StringComparison.Ordinal));
@@ -164,7 +212,7 @@ public static class Cli
         return Ok;
     }
 
-    private static int CommandRevokeTokens(string[] args)
+    private static int CommandRevokeTokens(string[] args, RuntimeConfig config)
     {
         if (!TryGetOption(args, "username", out var username))
         {
@@ -172,7 +220,6 @@ public static class Cli
             return Error;
         }
 
-        var config = Config.CreateDefaultConfig();
         var usersPath = config.Files.UsersFile;
         var users = LoadForWrite(usersPath);
         var index = users.Users.FindIndex(user => string.Equals(user.Username, username, StringComparison.Ordinal));
@@ -196,9 +243,8 @@ public static class Cli
         return Ok;
     }
 
-    private static int CommandListUsers(string[] args)
+    private static int CommandListUsers(string[] args, RuntimeConfig config)
     {
-        var config = Config.CreateDefaultConfig();
         var users = File.Exists(config.Files.UsersFile) ? UsersFile.LoadUsers(config.Files.UsersFile) : new UsersFile();
         Console.WriteLine($"nextTokenVersion: {users.NextTokenVersion}");
         Console.WriteLine("username,disabled,tokenVersion");
@@ -209,10 +255,9 @@ public static class Cli
         return Ok;
     }
 
-    private static int CommandHashPassword(string[] args, IPasswordHasher hasher)
+    private static int CommandHashPassword(string[] args, IPasswordHasher hasher, RuntimeConfig config)
     {
         var password = ReadPassword("Password: ", args);
-        var config = Config.CreateDefaultConfig();
         var hash = hasher.Hash(password, CreateArgon2Config(config));
         Console.WriteLine(hash);
         return Ok;

@@ -27,6 +27,8 @@ public static class ServerHost
         }
 
         RuntimeConfig config;
+        UsersFile users;
+        RuntimeStateStore stateStore;
         try
         {
             var configPath = args.Length > 0 && args[0] == "--config" ? args[1] : "textcascade.toml";
@@ -34,10 +36,10 @@ public static class ServerHost
             config = Config.LoadTomlConfig(configPath, config);
             config = Config.ApplyEnvironmentOverrides(config);
             Config.ValidateConfig(config);
-            var users = UsersFile.LoadUsers(config.Files.UsersFile);
-            SyncServer.Instance.Initialize(config, users);
+            users = UsersFile.LoadUsers(config.Files.UsersFile);
+            stateStore = new RuntimeStateStore(config.Files.StateFile);
         }
-        catch (Exception exception) when (exception is InvalidOperationException or JsonException or DecoderFallbackException)
+        catch (Exception exception) when (exception is InvalidOperationException or JsonException or DecoderFallbackException or IOException)
         {
             Console.Error.WriteLine($"Configuration error: {exception.Message}");
             return Error;
@@ -56,7 +58,6 @@ public static class ServerHost
 
         using (certificate)
         {
-        RuntimeConfigAccessor.Current = config;
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseKestrel(ConfigureKestrel(config, certificate));
         builder.Logging.ClearProviders();
@@ -65,14 +66,27 @@ public static class ServerHost
             options.SingleLine = true;
             options.TimestampFormat = "yyyy-MM-ddTHH:mm:ssZ ";
         });
+        builder.Services.AddSingleton<IPasswordHasher, Argon2PasswordHasher>();
+        builder.Services.AddSingleton<IClock, SystemClock>();
+        builder.Services.AddSingleton(stateStore);
+        builder.Services.AddSingleton(serviceProvider => new SyncServer(
+            config,
+            users,
+            serviceProvider.GetRequiredService<RuntimeStateStore>(),
+            serviceProvider.GetRequiredService<IPasswordHasher>(),
+            serviceProvider.GetRequiredService<IClock>(),
+            serviceProvider.GetRequiredService<ILogger<SyncServer>>()));
         builder.Services.AddHostedService<HeartbeatScannerService>();
         var app = builder.Build();
-        SyncServer.Instance.Logger = app.Logger;
         app.UseWebSockets();
 
         app.MapGet("/health", () => Results.Json(new { status = "ok" }));
-        app.MapPost("/api/v1/login", async context => await AuthService.HandleLoginAsync(context, config, app.Logger));
-        app.MapGet("/api/v1/sync", async context => await SyncEndpoint.HandleAsync(context, config));
+        app.MapPost("/api/v1/login", async context => await AuthService.HandleLoginAsync(
+            context,
+            config,
+            context.RequestServices.GetRequiredService<SyncServer>(),
+            app.Logger));
+        app.MapGet("/api/v1/sync", async context => await SyncEndpoint.HandleAsync(context, config, context.RequestServices.GetRequiredService<SyncServer>()));
         app.MapMethods("/health", new[] { "HEAD" }, () => Results.Json(new { status = "ok" }));
 
         app.Run();
@@ -236,25 +250,32 @@ public sealed class HeartbeatScannerService : IHostedService, IDisposable
 {
     private Timer? timer;
 
+    private readonly SyncServer syncServer;
+
+    public HeartbeatScannerService(SyncServer syncServer)
+    {
+        this.syncServer = syncServer;
+    }
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         timer = new Timer(Scan, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
         return Task.CompletedTask;
     }
 
-    private static void Scan(object? state)
+    private void Scan(object? state)
     {
         var now = DateTimeOffset.UtcNow;
-        SyncServer.Instance.ScanHeartbeats(now);
+        syncServer.ScanHeartbeats(now);
 
-        var recoveryEnd = SyncServer.Instance.ProcessStartTime.AddSeconds(
-            SyncServer.Instance.Config.Limits.SnapshotWindowSeconds);
+        var recoveryEnd = syncServer.ProcessStartTime.AddSeconds(
+            syncServer.Config.Limits.SnapshotWindowSeconds);
         if (now < recoveryEnd)
         {
             return;
         }
 
-        foreach (var pair in SyncServer.Instance.Registry.All)
+        foreach (var pair in syncServer.Registry.All)
         {
             pair.Value.CloseRecoveryWindow(now);
         }
@@ -263,7 +284,7 @@ public sealed class HeartbeatScannerService : IHostedService, IDisposable
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         timer?.Change(Timeout.Infinite, 0);
-        await SyncServer.Instance.ShutdownAsync(TimeSpan.FromSeconds(2), DateTimeOffset.UtcNow);
+        await syncServer.ShutdownAsync(TimeSpan.FromSeconds(2), DateTimeOffset.UtcNow);
     }
 
     public void Dispose()
