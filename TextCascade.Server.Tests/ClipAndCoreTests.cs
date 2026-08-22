@@ -144,4 +144,69 @@ public class ClipAndCoreTests
         var winner2 = CoreLogic.SelectSnapshotWinner(new[] { a2, b2 });
         Assert.Equal("pb", winner2!.Snapshot.Payload);
     }
+
+    [Fact]
+    public void SeenIdRingMaintainsFifoEvictionAfterRepeatedIds()
+    {
+        var ring = new SeenIdRing(2);
+        var result1 = new LatestText("p1", 1, "h1", false, "c1", "n1", DateTimeOffset.UtcNow);
+        var result2 = new LatestText("p2", 2, "h2", false, "c2", "n2", DateTimeOffset.UtcNow);
+
+        ring.RememberId("a", result1);
+        ring.RememberId("b");
+        ring.RememberId("a", result2);
+        ring.RememberId("c");
+
+        // Eviction order: slot0 had "a"(overwritten by "a"), slot1 had "b"(overwritten by "c")
+        // When inserting "c" into slot 1, slot1 ("b") is evicted.
+        // When slot 0 is overwritten by "a", slot0 ("a") was updated.
+        // Let's check:
+        // slot 0: was "a" (result1), replaced by "a" (result2). entries["a"] = result2
+        // slot 1: was "b" (null), replaced by "c" (null). "b" was evicted!
+        // So "b" was evicted, "c" and "a" exist.
+        // If we now insert one more:
+        var result3 = new LatestText("p3", 3, "h3", false, "c3", "n3", DateTimeOffset.UtcNow);
+        ring.RememberId("d", result3); // overwrites slot 0 (which was "a"). Evicts "a"!
+        Assert.False(ring.TryGetResult("a", out _));
+        Assert.True(ring.TryGetResult("d", out var resD));
+        Assert.Equal(result3, resD);
+    }
+
+    [Fact]
+    public void SeenIdRingRepeatedIdKeepsLatestResultBeforeEviction()
+    {
+        var ring = new SeenIdRing(4);
+        var old = new LatestText("old", 1, "h", false, "c", "n", DateTimeOffset.UtcNow);
+        var latest = new LatestText("new", 2, "h", false, "c", "n", DateTimeOffset.UtcNow);
+
+        ring.RememberId("same", old);
+        ring.RememberId("same", latest);
+
+        Assert.True(ring.TryGetResult("same", out var actual));
+        Assert.Equal(latest, actual);
+    }
+
+    [Fact]
+    public void SeenIdRingEvictsOldestWhenFull()
+    {
+        var ring = new SeenIdRing(3);
+        ring.RememberId("a");
+        ring.RememberId("b");
+        ring.RememberId("c");
+        ring.RememberId("d");
+
+        Assert.False(ring.TryGetResult("a", out _));
+        Assert.True(ring.TryGetResult("b", out _));
+        Assert.True(ring.TryGetResult("c", out _));
+        Assert.True(ring.TryGetResult("d", out _));
+    }
+
+    [Fact]
+    public void SeenIdRingUsesOrdinalComparison()
+    {
+        var ring = new SeenIdRing(4);
+        ring.RememberId("A");
+        Assert.False(ring.TryDuplicate("a"));
+        Assert.True(ring.TryDuplicate("A"));
+    }
 }

@@ -168,27 +168,31 @@ public sealed class TokenBucket
 public sealed class SeenIdRing
 {
     private readonly object gate = new();
-    private readonly string?[] ids;
-    private readonly LatestText?[] results;
-    private int next;
+    private readonly Dictionary<string, LatestText?> entries;
+    private readonly string?[] insertionOrder;
+    private int nextInsertIndex;
+
+    public int Capacity { get; }
 
     public SeenIdRing(int capacity)
     {
-        if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));
-        ids = new string?[capacity];
-        results = new LatestText?[capacity];
+        if (capacity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capacity));
+        }
+
+        Capacity = capacity;
+        entries = new Dictionary<string, LatestText?>(capacity, StringComparer.Ordinal);
+        insertionOrder = new string?[capacity];
     }
 
     public bool TryDuplicate(string id)
     {
         lock (gate)
         {
-            for (var i = 0; i < ids.Length; i++)
+            if (entries.ContainsKey(id))
             {
-                if (string.Equals(ids[i], id, StringComparison.Ordinal))
-                {
-                    return true;
-                }
+                return true;
             }
 
             RememberInternal(id, null);
@@ -200,17 +204,7 @@ public sealed class SeenIdRing
     {
         lock (gate)
         {
-            for (var i = 0; i < ids.Length; i++)
-            {
-                if (string.Equals(ids[i], id, StringComparison.Ordinal))
-                {
-                    result = results[i];
-                    return true;
-                }
-            }
-
-            result = null;
-            return false;
+            return entries.TryGetValue(id, out result);
         }
     }
 
@@ -228,30 +222,32 @@ public sealed class SeenIdRing
     {
         lock (gate)
         {
-            for (var index = 0; index < ids.Length; index++)
+            if (!entries.TryGetValue(id, out var remembered))
             {
-                if (!string.Equals(ids[index], id, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                latest = results[index];
-                return latest is not null
-                    && string.Equals(latest.Payload, payload, StringComparison.Ordinal)
-                    && string.Equals(latest.Hash, hash, StringComparison.Ordinal)
-                    && latest.Encrypted == encrypted;
+                latest = null;
+                return false;
             }
 
-            latest = null;
-            return false;
+            latest = remembered;
+            return remembered is not null
+                && string.Equals(remembered.Payload, payload, StringComparison.Ordinal)
+                && string.Equals(remembered.Hash, hash, StringComparison.Ordinal)
+                && remembered.Encrypted == encrypted;
         }
     }
 
     private void RememberInternal(string id, LatestText? result)
     {
-        ids[next] = id;
-        results[next] = result;
-        next = (next + 1) % ids.Length;
+        var evictedId = insertionOrder[nextInsertIndex];
+        if (evictedId is not null
+            && !string.Equals(evictedId, id, StringComparison.Ordinal))
+        {
+            entries.Remove(evictedId);
+        }
+
+        insertionOrder[nextInsertIndex] = id;
+        nextInsertIndex = (nextInsertIndex + 1) % insertionOrder.Length;
+        entries[id] = result;
     }
 }
 
@@ -286,3 +282,4 @@ public static class CoreLogic
             .FirstOrDefault();
     }
 }
+
