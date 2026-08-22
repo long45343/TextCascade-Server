@@ -2,7 +2,6 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -155,64 +154,41 @@ internal static class CertificateLoader
         var keyPath = File.Exists(Path.ChangeExtension(certificatePath, ".key"))
             ? Path.ChangeExtension(certificatePath, ".key")
             : certificatePath;
+
         var chain = new X509Certificate2Collection();
         try
         {
-            var certificatePem = File.ReadAllText(certificatePath, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true));
-            foreach (Match match in Regex.Matches(certificatePem, "-----BEGIN CERTIFICATE-----(?<data>.*?)-----END CERTIFICATE-----", RegexOptions.Singleline))
-            {
-                var base64 = Regex.Replace(match.Groups["data"].Value, "\\s", string.Empty);
-                var certificateBytes = Convert.FromBase64String(base64);
-                chain.Add(X509CertificateLoader.LoadCertificate(certificateBytes));
-            }
-
+            chain.ImportFromPemFile(certificatePath);
             if (chain.Count == 0)
             {
                 throw new InvalidOperationException("PEM file does not contain a certificate.");
             }
-        }
-        catch (Exception exception)
-        {
-            DisposeChain(chain);
-            throw new InvalidOperationException($"Unable to parse PEM certificate '{certificatePath}': {exception.Message}", exception);
-        }
 
-        string keyPem;
-        try
-        {
-            keyPem = File.ReadAllText(keyPath, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true));
-        }
-        catch (Exception exception)
-        {
-            DisposeChain(chain);
-            throw new InvalidOperationException($"Unable to read PEM private key '{keyPath}': {exception.Message}", exception);
-        }
+            var certificateWithKey = X509Certificate2.CreateFromPemFile(certificatePath, keyPath);
+            var originalLeaf = chain.Cast<X509Certificate2>().FirstOrDefault(c => c.Equals(certificateWithKey));
+            if (originalLeaf is not null)
+            {
+                var originalIndex = chain.IndexOf(originalLeaf);
+                chain[originalIndex] = certificateWithKey;
+                originalLeaf.Dispose();
+            }
+            else
+            {
+                chain.Insert(0, certificateWithKey);
+            }
 
-        try
-        {
-            using var rsa = RSA.Create();
-            rsa.ImportFromPem(keyPem);
-            var certificateWithKey = chain[0].CopyWithPrivateKey(rsa);
-            chain[0].Dispose();
-            chain[0] = certificateWithKey;
             return new LoadedCertificate(certificateWithKey, chain);
         }
-        catch (Exception rsaException)
+        catch (Exception exception) when (
+            exception is ArgumentException
+            or CryptographicException
+            or InvalidOperationException
+            or IOException)
         {
-            try
-            {
-                using var ecdsa = ECDsa.Create();
-                ecdsa.ImportFromPem(keyPem);
-                var certificateWithKey = chain[0].CopyWithPrivateKey(ecdsa);
-                chain[0].Dispose();
-                chain[0] = certificateWithKey;
-                return new LoadedCertificate(certificateWithKey, chain);
-            }
-            catch (Exception ecdsaException)
-            {
-                DisposeChain(chain);
-                throw new InvalidOperationException($"Unable to bind PEM private key. RSA: {rsaException.Message}; ECDSA: {ecdsaException.Message}", ecdsaException);
-            }
+            DisposeChain(chain);
+            throw new InvalidOperationException(
+                $"Unable to load PEM certificate '{certificatePath}': {exception.Message}",
+                exception);
         }
     }
 
@@ -292,3 +268,4 @@ public sealed class HeartbeatScannerService : IHostedService, IDisposable
         timer?.Dispose();
     }
 }
+
