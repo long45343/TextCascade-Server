@@ -19,6 +19,8 @@ public sealed class UserHub
     private readonly List<ConnectionContext> connections = new();
     private readonly RuntimeConfig config;
     private Task? userLoop;
+    private readonly object userLoopGate = new();
+    private int readerActive;
 
     private readonly object snapshotGate = new();
     private readonly List<ClientHello> snapshotCandidates = new();
@@ -88,14 +90,24 @@ public sealed class UserHub
         return removed;
     }
 
-    public void StartIfIdle()
+    public Task StartIfIdle()
     {
-        if (userLoop is null || userLoop.IsCompleted)
+        lock (userLoopGate)
         {
+            if (userLoop is not null && !userLoop.IsCompleted)
+            {
+                return userLoop;
+            }
+
             userLoop = Task.Run(async () =>
             {
-                try { await RunUserLoopAsync(); }
-                catch (OperationCanceledException) { }
+                try
+                {
+                    await RunUserLoopAsync();
+                }
+                catch (OperationCanceledException)
+                {
+                }
                 catch (Exception exception)
                 {
                     coordinator.Logger.LogError(
@@ -105,23 +117,34 @@ public sealed class UserHub
                     coordinator.RebuildHub(this);
                 }
             });
+            return userLoop;
         }
     }
-
     public bool TryWriteJob(UserJob job) => UserChannel.Writer.TryWrite(job);
 
     public async Task RunUserLoopAsync(CancellationToken cancellationToken = default)
     {
-        var reader = UserChannel.Reader;
-        while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        if (Interlocked.CompareExchange(ref readerActive, 1, 0) != 0)
         {
-            while (reader.TryRead(out var job))
+            throw new InvalidOperationException("User loop is already running.");
+        }
+
+        try
+        {
+            var reader = UserChannel.Reader;
+            while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                ProcessJob(job, DateTimeOffset.UtcNow);
+                while (reader.TryRead(out var job))
+                {
+                    ProcessJob(job, DateTimeOffset.UtcNow);
+                }
             }
         }
+        finally
+        {
+            Interlocked.Exchange(ref readerActive, 0);
+        }
     }
-
     private void ProcessJob(UserJob job, DateTimeOffset nowUtc)
     {
         switch (job)
@@ -351,6 +374,7 @@ public sealed class UserHub
         }
     }
 }
+
 
 
 

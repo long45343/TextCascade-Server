@@ -81,7 +81,7 @@ public class UserHubCoordinationTests
                 stateStore,
                 ulong.MaxValue);
 
-            hub.StartIfIdle();
+            _ = hub.StartIfIdle();
 
             // Enqueue a clip job to trigger overflow
             var dummySocket = new System.Net.WebSockets.ClientWebSocket();
@@ -110,4 +110,5 @@ public class UserHubCoordinationTests
         }
     }
 }
+
 
