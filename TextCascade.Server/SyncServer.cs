@@ -15,7 +15,7 @@ public sealed class SystemClock : IClock
     public DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
 }
 
-public sealed class SyncServer
+public sealed class SyncServer : IConnectionCoordinator
 {
     private readonly UserRegistry registry = new();
     private readonly List<ConnectionContext> pendingHellos = new();
@@ -57,10 +57,16 @@ public sealed class SyncServer
             Cli.CreateArgon2Config(config));
     }
 
+    ILogger IConnectionCoordinator.Logger => Logger;
+
+    void IConnectionCoordinator.RebuildHub(UserHub hub) => RebuildHub(hub);
+
+    public void RemoveEmptyHubAfterRecovery(UserHub hub) => registry.RemoveIfEmpty(hub, allowDuringRecovery: true);
+
     public UserHub GetOrCreateHub(string username, RuntimeConfig runtimeConfig)
     {
         var initialVersion = runtimeStateStore.GetVersion(username);
-        var hub = registry.GetOrAdd(username, name => new UserHub(name, runtimeConfig, ProcessStartTime, this, initialVersion));
+        var hub = registry.GetOrAdd(username, name => new UserHub(name, runtimeConfig, ProcessStartTime, this, runtimeStateStore, initialVersion));
         hub.StartIfIdle();
         return hub;
     }
@@ -272,4 +278,6 @@ public sealed class SyncServer
         }
     }
 }
+
+
 
