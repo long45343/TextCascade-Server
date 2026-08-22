@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-22
+
 ### Added
 - Native ASP.NET Core `CreateApp` factory and comprehensive end-to-end WebSocket integration tests covering handshake, broadcast, snapshots, invalid tokens, and abrupt disconnections.
 - Hot-reloading of `users.json` via file system watcher with debounced reload and periodic fallback.
@@ -55,7 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial import and baseline release of TextCascade Server with Minimal API, Kestrel WebSocket, Argon2 password hashing, and token authentication.
 
-[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/long45343/TextCascade-Server/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/long45343/TextCascade-Server/compare/v0.2.1...v0.2.5
 [0.2.1]: https://github.com/long45343/TextCascade-Server/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/long45343/TextCascade-Server/compare/v0.1.0...v0.2.0

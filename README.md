@@ -30,7 +30,7 @@
 | 密码哈希 | Argon2(id)(`Isopoh.Cryptography.Argon2`) |
 | 用户存储 | `users.json` |
 | 协议子协议 | `textcascade.v1` |
-| 产品版本 | SemVer,当前 `0.2.5` |
+| 产品版本 | SemVer,当前 `0.3.0` |
 
 ### 仓库结构
 
@@ -159,7 +159,7 @@ GitHub Release 提供两种 Framework-dependent 单文件包,目标机需预装 
 
 包内附带主程序、配置模板;Linux 包另附 systemd unit。每次 Release 同时提供 SHA-256 校验文件。
 
-推送 `v*.*.*` 标签(如 `v0.2.5`)会自动执行测试、构建双平台单文件包、生成校验和并发布 GitHub Release。`main` 分支和 Pull Request 会自动执行 restore/build/test CI。
+推送 `v*.*.*` 标签(如 `v0.3.0`)会自动执行测试、构建双平台单文件包、生成校验和并发布 GitHub Release。`main` 分支和 Pull Request 会自动执行 restore/build/test CI。
 ### 生产部署(systemd)
 
 参考 `deploy/textcascade-server.service`:
@@ -207,7 +207,7 @@ Built on ASP.NET Core Minimal API with native Kestrel WebSockets, TLS-terminated
 | Password hash | Argon2(id) (`Isopoh.Cryptography.Argon2`) |
 | User store | `users.json` |
 | Subprotocol | `textcascade.v1` |
-| Version | SemVer, currently `0.2.5` |
+| Version | SemVer, currently `0.3.0` |
 
 ### Quick Start
 
@@ -316,7 +316,7 @@ GitHub Releases provides two framework-dependent single-file archives. The .NET 
 
 Each archive contains the executable and config template; the Linux archive also includes the systemd unit. Every Release includes a SHA-256 checksum file.
 
-Pushing a `v*.*.*` tag (for example `v0.2.5`) runs tests, builds both single-file archives, generates checksums, and publishes a GitHub Release. Pushes to `main` and pull requests run restore/build/test CI automatically.
+Pushing a `v*.*.*` tag (for example `v0.3.0`) runs tests, builds both single-file archives, generates checksums, and publishes a GitHub Release. Pushes to `main` and pull requests run restore/build/test CI automatically.
 ### Production (systemd)
 
 See `deploy/textcascade-server.service`:
