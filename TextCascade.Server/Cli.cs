@@ -21,12 +21,6 @@ public static class Cli
         }
 
         hasher ??= new Argon2PasswordHasher();
-        using var lockHandle = SingleInstanceLock.Acquire();
-        if (lockHandle is null)
-        {
-            Console.Error.WriteLine("Another TextCascade CLI process is running.");
-            return Error;
-        }
 
         var rest = args.Skip(1).ToArray();
         if (!TryExtractConfigOption(ref rest, out var configPath))
@@ -51,7 +45,27 @@ public static class Cli
             return Error;
         }
 
-        return rest switch
+        SingleInstanceLockHandle? lockHandle;
+        try
+        {
+            var lockPath = CreateLockPath(config.Files.UsersFile);
+            lockHandle = SingleInstanceLock.Acquire(lockPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or DirectoryNotFoundException or ArgumentException or InvalidOperationException)
+        {
+            Console.Error.WriteLine($"Unable to acquire users file lock: {exception.Message}");
+            return Error;
+        }
+
+        using (lockHandle)
+        {
+            if (lockHandle is null)
+            {
+                Console.Error.WriteLine("Another TextCascade CLI process is running.");
+                return Error;
+            }
+
+            return rest switch
         {
             { Length: > 0 } when rest[0] == "add" => CommandAddUser(rest, hasher, config),
             { Length: > 0 } when rest[0] == "passwd" => CommandPasswd(rest, hasher, config),
@@ -63,6 +77,20 @@ public static class Cli
             { Length: > 0 } when rest[0] == "hash" => CommandHashPassword(rest, hasher, config),
             _ => PrintUsage(),
         };
+        }
+    }
+
+    internal static string CreateLockPath(string usersFile)
+    {
+        var fullUsersPath = Path.GetFullPath(usersFile);
+        var directory = Path.GetDirectoryName(fullUsersPath);
+        if (string.IsNullOrEmpty(directory))
+        {
+            throw new InvalidOperationException("users.json path must include a parent directory.");
+        }
+
+        var fileName = Path.GetFileName(fullUsersPath);
+        return Path.Combine(directory, $"{fileName}.lock");
     }
 
     private static int PrintUsage()
@@ -381,10 +409,24 @@ public sealed class SingleInstanceLockHandle : IDisposable
 
 public static class SingleInstanceLock
 {
-    public static SingleInstanceLockHandle? Acquire(TimeSpan? pollDelay = null)
+    public static SingleInstanceLockHandle? Acquire(string lockPath, TimeSpan? pollDelay = null)
     {
-        var directory = AppContext.BaseDirectory;
-        var lockPath = Path.Combine(directory, ".textcascade-cli.lock");
+        if (string.IsNullOrWhiteSpace(lockPath))
+        {
+            throw new ArgumentException("Lock path must not be empty.", nameof(lockPath));
+        }
+
+        var directory = Path.GetDirectoryName(lockPath);
+        if (string.IsNullOrEmpty(directory))
+        {
+            throw new ArgumentException("Lock path must include a directory.", nameof(lockPath));
+        }
+
+        if (!Directory.Exists(directory))
+        {
+            throw new DirectoryNotFoundException($"Directory '{directory}' does not exist.");
+        }
+
         var delay = pollDelay ?? TimeSpan.FromMilliseconds(100);
 
         for (var attempt = 0; attempt < 3; attempt++)
@@ -469,3 +511,5 @@ public static class SingleInstanceLock
         }
     }
 }
+
+
