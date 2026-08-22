@@ -23,7 +23,7 @@ public sealed class SyncServer : IConnectionCoordinator
     private readonly IPasswordHasher hasher;
     private readonly IClock clock;
     private readonly RuntimeStateStore runtimeStateStore;
-    private readonly IReadOnlyDictionary<string, UserRecord> userLookup;
+    private IReadOnlyDictionary<string, UserRecord> userLookup;
     private readonly string loginDummyHash;
 
     public UserRegistry Registry => registry;
@@ -31,7 +31,7 @@ public sealed class SyncServer : IConnectionCoordinator
     public SlidingWindowLoginLimiter LoginLimiter { get; } = new();
     public IClock Clock => clock;
     public ILogger<SyncServer> Logger { get; }
-    public IReadOnlyDictionary<string, UserRecord> UserLookup => userLookup;
+    public IReadOnlyDictionary<string, UserRecord> UserLookup => Volatile.Read(ref userLookup);
     public DateTimeOffset ProcessStartTime { get; }
     public RuntimeConfig Config { get; }
     public RuntimeStateStore RuntimeStateStore => runtimeStateStore;
@@ -62,6 +62,12 @@ public sealed class SyncServer : IConnectionCoordinator
     void IConnectionCoordinator.RebuildHub(UserHub hub) => RebuildHub(hub);
 
     public void RemoveEmptyHubAfterRecovery(UserHub hub) => registry.RemoveIfEmpty(hub, allowDuringRecovery: true);
+
+    public void ReplaceUserLookup(UsersFile users)
+    {
+        var replacement = UsersFile.BuildUserLookup(users);
+        Volatile.Write(ref userLookup, replacement);
+    }
 
     public UserHub GetOrCreateHub(string username, RuntimeConfig runtimeConfig)
     {

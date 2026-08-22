@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -88,6 +88,8 @@ public static class ServerHost
         app.MapGet("/api/v1/sync", async context => await SyncEndpoint.HandleAsync(context, config, context.RequestServices.GetRequiredService<SyncServer>()));
         app.MapMethods("/health", new[] { "HEAD" }, () => Results.Json(new { status = "ok" }));
 
+        using var userFileWatcher = new UserFileWatcher(config.Files.UsersFile, app.Services.GetRequiredService<SyncServer>(), app.Logger);
+        userFileWatcher.Start();
         app.Run();
         }
         return Ok;
