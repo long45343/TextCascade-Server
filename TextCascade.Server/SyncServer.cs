@@ -525,6 +525,7 @@ public sealed class SyncServer
     private readonly IClock clock;
     private readonly RuntimeStateStore runtimeStateStore;
     private readonly IReadOnlyDictionary<string, UserRecord> userLookup;
+    private readonly string loginDummyHash;
 
     public UserRegistry Registry => registry;
     public IPasswordHasher Hasher => hasher;
@@ -535,6 +536,7 @@ public sealed class SyncServer
     public DateTimeOffset ProcessStartTime { get; }
     public RuntimeConfig Config { get; }
     public RuntimeStateStore RuntimeStateStore => runtimeStateStore;
+    internal string LoginDummyHash => loginDummyHash;
 
     public SyncServer(
         RuntimeConfig config,
@@ -551,6 +553,9 @@ public sealed class SyncServer
         this.clock = clock;
         Logger = logger;
         ProcessStartTime = clock.UtcNow;
+        loginDummyHash = hasher.Hash(
+            "textcascade-login-timing-dummy",
+            Cli.CreateArgon2Config(config));
     }
 
     public UserHub GetOrCreateHub(string username, RuntimeConfig runtimeConfig)
@@ -1080,3 +1085,4 @@ public static class ConnectionHandler
 internal sealed class FrameTooLargeException : Exception;
 
 internal sealed record ReceivedMessage(WebSocketMessageType MessageType, byte[] Payload);
+
