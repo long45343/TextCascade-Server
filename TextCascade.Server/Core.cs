@@ -29,6 +29,42 @@ public sealed class SlidingWindowLoginLimiter
         }
     }
 
+    internal int GetWindowCount(string key)
+    {
+        lock (gate)
+        {
+            return windows.TryGetValue(key, out var queue) ? queue.Count : 0;
+        }
+    }
+
+    internal bool HasWindowKey(string key)
+    {
+        lock (gate)
+        {
+            return windows.ContainsKey(key);
+        }
+    }
+
+    internal void RemoveExpiredForTest(DateTimeOffset cutoff)
+    {
+        lock (gate)
+        {
+            RemoveExpired(cutoff);
+        }
+    }
+
+    internal void EnqueueForTest(string key, DateTimeOffset timestamp)
+    {
+        lock (gate)
+        {
+            if (!windows.TryGetValue(key, out var queue))
+            {
+                windows[key] = queue = new Queue<DateTimeOffset>();
+            }
+            queue.Enqueue(timestamp);
+        }
+    }
+
     private bool TryConsume(string key, int limit, DateTimeOffset nowUtc, int maxKeys, bool allowNewKey)
     {
         var cutoff = nowUtc.AddMinutes(-1);
@@ -57,22 +93,32 @@ public sealed class SlidingWindowLoginLimiter
         }
 
         queue.Enqueue(nowUtc);
-        if (queue.Count == 0)
-        {
-            windows.Remove(key);
-        }
-
         return true;
     }
 
     private void RemoveExpired(DateTimeOffset cutoff)
     {
-        var stale = windows.Where(pair => pair.Value.Count == 0 || pair.Value.Peek() <= cutoff)
-            .Select(pair => pair.Key)
-            .ToList();
-        foreach (var key in stale)
+        List<string>? emptyKeys = null;
+        foreach (var pair in windows)
         {
-            windows.Remove(key);
+            var queue = pair.Value;
+            while (queue.Count > 0 && queue.Peek() <= cutoff)
+            {
+                queue.Dequeue();
+            }
+
+            if (queue.Count == 0)
+            {
+                (emptyKeys ??= new List<string>()).Add(pair.Key);
+            }
+        }
+
+        if (emptyKeys is not null)
+        {
+            foreach (var key in emptyKeys)
+            {
+                windows.Remove(key);
+            }
         }
     }
 }
