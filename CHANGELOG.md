@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
 
@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.3.5] - 2026-08-22
+
+### Changed
+- Refactored `RuntimeStateStore` to lock-free memory CAS updates using `ConcurrentDictionary` and background periodic flush (`PeriodicTimer`) with atomic snapshot persistence, eliminating synchronous disk I/O bottlenecks in the clip synchronization pipeline.
+- Added graceful shutdown flush hook to `SyncServer.ShutdownAsync` ensuring all pending version increments are flushed upon service stop.
+- Added concurrency, background periodic flush, and fault-tolerance unit tests for `RuntimeStateStore`.
 
 ## [0.3.0] - 2026-08-22
 
@@ -57,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial import and baseline release of TextCascade Server with Minimal API, Kestrel WebSocket, Argon2 password hashing, and token authentication.
 
-[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/long45343/TextCascade-Server/compare/v0.3.0...v0.3.5
 [0.3.0]: https://github.com/long45343/TextCascade-Server/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/long45343/TextCascade-Server/compare/v0.2.1...v0.2.5
 [0.2.1]: https://github.com/long45343/TextCascade-Server/compare/v0.2.0...v0.2.1

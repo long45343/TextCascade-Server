@@ -1,3 +1,4 @@
+﻿using System.Collections.Concurrent;
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using TextCascade.Server;
@@ -14,14 +15,76 @@ public class RuntimeStateAndProtocolTests
         var path = Path.Combine(Path.GetTempPath(), $"textcascade-state-{Guid.NewGuid():N}.json");
         try
         {
-            var first = new RuntimeStateStore(path);
-            first.SaveVersion("alice", 7UL);
+            using (var first = new RuntimeStateStore(path, TimeSpan.Zero))
+            {
+                first.SaveVersion("alice", 7UL);
+                first.Flush();
+            }
 
-            var second = new RuntimeStateStore(path);
-            second.SaveVersion("alice", 5UL);
+            using (var second = new RuntimeStateStore(path, TimeSpan.Zero))
+            {
+                second.SaveVersion("alice", 5UL);
+                second.Flush();
 
-            Assert.Equal(7UL, second.GetVersion("alice"));
-            Assert.Equal(7UL, new RuntimeStateStore(path).GetVersion("alice"));
+                Assert.Equal(7UL, second.GetVersion("alice"));
+            }
+
+            using (var third = new RuntimeStateStore(path, TimeSpan.Zero))
+            {
+                Assert.Equal(7UL, third.GetVersion("alice"));
+            }
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task StateStoreFlushesPeriodicallyInBackground()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"textcascade-state-{Guid.NewGuid():N}.json");
+        try
+        {
+            using (var store = new RuntimeStateStore(path, TimeSpan.FromMilliseconds(50)))
+            {
+                store.SaveVersion("alice", 12UL);
+                Assert.Equal(12UL, store.GetVersion("alice"));
+
+                // Wait for background timer tick
+                await Task.Delay(150);
+
+                using var reloaded = new RuntimeStateStore(path, TimeSpan.Zero);
+                Assert.Equal(12UL, reloaded.GetVersion("alice"));
+            }
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void StateStoreConcurrentSaveVersionMaintainsHighestValue()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"textcascade-state-{Guid.NewGuid():N}.json");
+        try
+        {
+            using var store = new RuntimeStateStore(path, TimeSpan.Zero);
+            Parallel.For(1, 100, i =>
+            {
+                store.SaveVersion("alice", (ulong)i);
+                store.SaveVersion("bob", (ulong)(100 - i));
+            });
+
+            Assert.Equal(99UL, store.GetVersion("alice"));
+            Assert.Equal(99UL, store.GetVersion("bob"));
+
+            store.Flush();
+
+            using var reloaded = new RuntimeStateStore(path, TimeSpan.Zero);
+            Assert.Equal(99UL, reloaded.GetVersion("alice"));
+            Assert.Equal(99UL, reloaded.GetVersion("bob"));
         }
         finally
         {
@@ -36,7 +99,7 @@ public class RuntimeStateAndProtocolTests
         try
         {
             File.WriteAllText(path, """{"entries":[{"username":"alice","version":0}]}""", Encoding.UTF8);
-            Assert.Throws<InvalidOperationException>(() => new RuntimeStateStore(path));
+            Assert.Throws<InvalidOperationException>(() => new RuntimeStateStore(path, TimeSpan.Zero));
         }
         finally
         {
@@ -76,12 +139,18 @@ public class RuntimeStateAndProtocolTests
         var path = Path.Combine(Path.GetTempPath(), $"textcascade-state-{Guid.NewGuid():N}.json");
         try
         {
-            new RuntimeStateStore(path).SaveVersion("alice", 7UL);
+            using (var initialStore = new RuntimeStateStore(path, TimeSpan.Zero))
+            {
+                initialStore.SaveVersion("alice", 7UL);
+                initialStore.Flush();
+            }
+
             var config = TextCascade.Server.Config.CreateDefaultConfig();
+            using var stateStore = new RuntimeStateStore(path, TimeSpan.Zero);
             var server = new SyncServer(
                 config,
                 new UsersFile(),
-                new RuntimeStateStore(path),
+                stateStore,
                 new Argon2PasswordHasher(),
                 new SystemClock(),
                 NullLogger<SyncServer>.Instance);
@@ -111,12 +180,18 @@ public class RuntimeStateAndProtocolTests
         var path = Path.Combine(Path.GetTempPath(), $"textcascade-state-{Guid.NewGuid():N}.json");
         try
         {
-            new RuntimeStateStore(path).SaveVersion("alice", 7UL);
+            using (var initialStore = new RuntimeStateStore(path, TimeSpan.Zero))
+            {
+                initialStore.SaveVersion("alice", 7UL);
+                initialStore.Flush();
+            }
+
             var config = TextCascade.Server.Config.CreateDefaultConfig();
+            using var stateStore = new RuntimeStateStore(path, TimeSpan.Zero);
             var server = new SyncServer(
                 config,
                 new UsersFile(),
-                new RuntimeStateStore(path),
+                stateStore,
                 new Argon2PasswordHasher(),
                 new SystemClock(),
                 NullLogger<SyncServer>.Instance);
@@ -138,5 +213,3 @@ public class RuntimeStateAndProtocolTests
         }
     }
 }
-
-

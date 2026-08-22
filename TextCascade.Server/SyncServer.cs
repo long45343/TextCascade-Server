@@ -267,6 +267,8 @@ public sealed class SyncServer : IConnectionCoordinator
                 CancelConnection(connection, "server_shutdown");
             }
         }
+
+        runtimeStateStore.Flush();
     }
 
     private static async Task CloseConnectionAsync(ConnectionContext connection, WebSocketCloseStatus status, string reason)

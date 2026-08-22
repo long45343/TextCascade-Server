@@ -1,6 +1,8 @@
+﻿using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace TextCascade.Server;
 
@@ -8,40 +10,108 @@ public sealed record RuntimeStateEntry(string Username, ulong Version);
 
 internal sealed record RuntimeStateFile(IReadOnlyList<RuntimeStateEntry> Entries);
 
-public sealed class RuntimeStateStore
+public sealed class RuntimeStateStore : IDisposable
 {
-    private readonly object gate = new();
     private readonly string path;
-    private readonly Dictionary<string, ulong> versions;
+    private readonly ILogger? logger;
+    private readonly ConcurrentDictionary<string, ulong> versions;
+    private int isDirty;
+    private readonly object writeGate = new();
 
-    public RuntimeStateStore(string path)
+    private readonly PeriodicTimer? flushTimer;
+    private readonly CancellationTokenSource? cts;
+    private readonly Task? flushLoopTask;
+    private bool disposed;
+
+    public RuntimeStateStore(
+        string path,
+        TimeSpan? flushInterval = null,
+        ILogger<RuntimeStateStore>? logger = null)
     {
         this.path = path;
-        versions = Load(path);
+        this.logger = logger;
+        this.versions = new ConcurrentDictionary<string, ulong>(Load(path), StringComparer.Ordinal);
+
+        var interval = flushInterval ?? TimeSpan.FromSeconds(5);
+        if (interval > TimeSpan.Zero)
+        {
+            flushTimer = new PeriodicTimer(interval);
+            cts = new CancellationTokenSource();
+            flushLoopTask = Task.Run(() => RunFlushLoopAsync(cts.Token));
+        }
     }
 
     public ulong GetVersion(string username)
     {
-        lock (gate)
-        {
-            return versions.TryGetValue(username, out var version) ? version : 0UL;
-        }
+        return versions.TryGetValue(username, out var version) ? version : 0UL;
     }
 
     public void SaveVersion(string username, ulong version)
     {
-        lock (gate)
-        {
-            if (versions.TryGetValue(username, out var current) && version <= current)
-            {
-                return;
-            }
+        versions.AddOrUpdate(
+            username,
+            static (_, newVer) => newVer,
+            static (_, current, newVer) => newVer > current ? newVer : current,
+            version);
+        Volatile.Write(ref isDirty, 1);
+    }
 
-            versions[username] = version;
-            WriteAtomic(path, versions.Select(pair => new RuntimeStateEntry(pair.Key, pair.Value))
-                .OrderBy(pair => pair.Username, StringComparer.Ordinal)
-                .ToList());
+    public bool Flush()
+    {
+        if (Interlocked.Exchange(ref isDirty, 0) == 0)
+        {
+            return false;
         }
+
+        lock (writeGate)
+        {
+            try
+            {
+                var entries = versions
+                    .Select(pair => new RuntimeStateEntry(pair.Key, pair.Value))
+                    .OrderBy(pair => pair.Username, StringComparer.Ordinal)
+                    .ToList();
+                WriteAtomic(path, entries);
+                return true;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Volatile.Write(ref isDirty, 1);
+                logger?.LogWarning(exception, "Failed to write runtime state file; will retry in next flush cycle. path={Path}", path);
+                return false;
+            }
+        }
+    }
+
+    private async Task RunFlushLoopAsync(CancellationToken cancellationToken)
+    {
+        if (flushTimer is null) return;
+        try
+        {
+            while (await flushTimer.WaitForNextTickAsync(cancellationToken))
+            {
+                Flush();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+
+        if (cts is not null)
+        {
+            cts.Cancel();
+            try { flushLoopTask?.GetAwaiter().GetResult(); } catch { }
+            cts.Dispose();
+        }
+
+        flushTimer?.Dispose();
+        Flush();
     }
 
     private static Dictionary<string, ulong> Load(string path)
