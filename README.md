@@ -30,7 +30,7 @@
 | 密码哈希 | Argon2(id)(`Isopoh.Cryptography.Argon2`) |
 | 用户存储 | `users.json` |
 | 协议子协议 | `textcascade.v1` |
-| 产品版本 | SemVer,当前 `0.2.0` |
+| 产品版本 | SemVer,当前 `0.2.5` |
 
 ### 仓库结构
 
@@ -39,15 +39,19 @@ TextCascade-Server/
 ├── TextCascade.Server/            服务端源码
 │   ├── Program.cs                 入口:serve / user CLI 分发
 │   ├── ServerHost.cs              配置加载、证书、WebHost 构建、路由映射
-│   ├── SyncServer.cs              核心:UserHub/UserRegistry/连接与广播
+│   ├── SyncServer.cs              核心协调器
+│   ├── Hosting/                   端点、连接处理、心跳与文件监听
+│   ├── Hub/                       UserHub、UserRegistry、协调器接口与任务
+│   ├── Models/                    连接上下文、状态模型与接收消息
 │   ├── Protocol.cs                JSON 协议模型与解析
 │   ├── Auth.cs / AuthService.cs   token 签发、校验、登录限流
 │   ├── Users.cs / Cli.cs          用户文件与 CLI(add/passwd/...)
 │   ├── RuntimeConfig.cs          TOML 配置与默认值、环境变量覆盖
-│   └── Core.cs                    限流等基础工具
+│   └── Core.cs                    限流、去重环形队列等基础工具
 ├── TextCascade.Server.Tests/      xUnit 测试
 ├── deploy/                        systemd unit、示例 TOML 与空 users.json
-└── TextCascade.Server.slnx        解决案
+├── CHANGELOG.md                   版本变更记录
+└── TextCascade.Server.slnx        解决方案
 ```
 
 ### 快速开始
@@ -155,7 +159,7 @@ GitHub Release 提供两种 Framework-dependent 单文件包,目标机需预装 
 
 包内附带主程序、配置模板;Linux 包另附 systemd unit。每次 Release 同时提供 SHA-256 校验文件。
 
-推送 `v*.*.*` 标签(如 `v0.2.0`)会自动执行测试、构建双平台单文件包、生成校验和并发布 GitHub Release。`main` 分支和 Pull Request 会自动执行 restore/build/test CI。
+推送 `v*.*.*` 标签(如 `v0.2.5`)会自动执行测试、构建双平台单文件包、生成校验和并发布 GitHub Release。`main` 分支和 Pull Request 会自动执行 restore/build/test CI。
 ### 生产部署(systemd)
 
 参考 `deploy/textcascade-server.service`:
@@ -167,6 +171,13 @@ GitHub Release 提供两种 Framework-dependent 单文件包,目标机需预装 
 ### 许可
 
 见仓库 LICENSE(如有)。
+
+---
+
+### 发版与维护规范
+
+- 每个用户可见版本发布前，需将 CHANGELOG.md 中的 [Unreleased] 部分归档为对应版本号与发版日期，并维护底部的 compare 链接。
+- 版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)，版本变更记录遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。
 
 ---
 
@@ -196,7 +207,7 @@ Built on ASP.NET Core Minimal API with native Kestrel WebSockets, TLS-terminated
 | Password hash | Argon2(id) (`Isopoh.Cryptography.Argon2`) |
 | User store | `users.json` |
 | Subprotocol | `textcascade.v1` |
-| Version | SemVer, currently `0.2.0` |
+| Version | SemVer, currently `0.2.5` |
 
 ### Quick Start
 
@@ -305,7 +316,7 @@ GitHub Releases provides two framework-dependent single-file archives. The .NET 
 
 Each archive contains the executable and config template; the Linux archive also includes the systemd unit. Every Release includes a SHA-256 checksum file.
 
-Pushing a `v*.*.*` tag (for example `v0.2.0`) runs tests, builds both single-file archives, generates checksums, and publishes a GitHub Release. Pushes to `main` and pull requests run restore/build/test CI automatically.
+Pushing a `v*.*.*` tag (for example `v0.2.5`) runs tests, builds both single-file archives, generates checksums, and publishes a GitHub Release. Pushes to `main` and pull requests run restore/build/test CI automatically.
 ### Production (systemd)
 
 See `deploy/textcascade-server.service`:
@@ -317,3 +328,9 @@ See `deploy/textcascade-server.service`:
 ### License
 
 See the repository LICENSE if present.
+
+### Release & Maintenance Guidelines
+
+- Before releasing any user-visible version, update CHANGELOG.md by moving the [Unreleased] section to the target version number and release date, along with the compare link at the bottom.
+- Versioning adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) and change records follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
