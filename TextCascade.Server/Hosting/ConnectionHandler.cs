@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Net.WebSockets;
 using System.Text;
 using Microsoft.Extensions.Logging;
@@ -267,3 +267,4 @@ public static class ConnectionHandler
 
 
 internal sealed class FrameTooLargeException : Exception;
+

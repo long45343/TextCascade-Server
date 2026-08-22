@@ -244,7 +244,7 @@ public static class Protocol
         return stream.ToArray();
     }
 
-    public static ParseResult ParseClientMessage(ReadOnlySpan<byte> frame, RuntimeConfig config)
+    public static ParseResult ParseClientMessage(ReadOnlyMemory<byte> frame, RuntimeConfig config)
     {
         using var document = TryParseJson(frame, out var parseError);
         if (parseError is not null)
@@ -458,11 +458,11 @@ public static class Protocol
         return true;
     }
 
-    private static JsonDocument? TryParseJson(ReadOnlySpan<byte> frame, out ProtocolError? error)
+    private static JsonDocument? TryParseJson(ReadOnlyMemory<byte> frame, out ProtocolError? error)
     {
         try
         {
-            var document = JsonDocument.Parse(frame.ToArray(), new JsonDocumentOptions
+            var document = JsonDocument.Parse(frame, new JsonDocumentOptions
             {
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,
@@ -597,3 +597,4 @@ public readonly record struct ParseResult
 
     public static ParseResult Failure(ProtocolError error) => new(MessageKind.Unknown, null, error);
 }
+
