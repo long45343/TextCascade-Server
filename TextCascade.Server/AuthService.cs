@@ -34,22 +34,18 @@ public sealed class AuthService
 
         var userLookup = syncServer.UserLookup;
         var found = userLookup.TryGetValue(request.Username, out var user);
-        var passwordOk = found && user is not null && syncServer.Hasher.Verify(request.Password, user.PasswordHash);
-        if (!passwordOk)
+        var passwordHash = found && user is not null
+            ? user.PasswordHash
+            : syncServer.LoginDummyHash;
+        var passwordOk = syncServer.Hasher.Verify(request.Password, passwordHash);
+        if (!found || !passwordOk || user is null || user.Disabled)
         {
             logger?.LogSecurityEvent("login", ("username", request.Username), ("ip", ip), ("success", false), ("reason", "invalid_credentials"));
             await WriteError(context, 401, "invalid_credentials", "Invalid username or password.");
             return;
         }
 
-        var authenticatedUser = user!;
-        if (authenticatedUser.Disabled)
-        {
-            logger?.LogSecurityEvent("login", ("username", request.Username), ("ip", ip), ("success", false), ("reason", "disabled"));
-            await WriteError(context, 401, "invalid_credentials", "Invalid username or password.");
-            return;
-        }
-
+        var authenticatedUser = user;
         limiter.ResetUserLoginLimit(request.Username);
         logger?.LogSecurityEvent("login", ("username", request.Username), ("ip", ip), ("success", true));
 
