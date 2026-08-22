@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 
@@ -26,16 +26,16 @@ public sealed class UserHub
     private readonly List<RecoveryClip> recoveryQueue = new();
     private bool recoveryWindowClosed;
 
-    private readonly SyncServer server;
+    private readonly IConnectionCoordinator coordinator;
     private readonly RuntimeStateStore runtimeStateStore;
     private long lastActivityTicks;
 
-    public UserHub(string username, RuntimeConfig config, DateTimeOffset processStart, SyncServer server, ulong initialVersion)
+    public UserHub(string username, RuntimeConfig config, DateTimeOffset processStart, IConnectionCoordinator coordinator, RuntimeStateStore runtimeStateStore, ulong initialVersion)
     {
         Username = username;
         this.config = config;
-        this.server = server;
-        this.runtimeStateStore = server.RuntimeStateStore;
+        this.coordinator = coordinator;
+        this.runtimeStateStore = runtimeStateStore;
         ProcessStartTime = processStart;
         UserChannel = Channel.CreateUnbounded<UserJob>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
         ClipBucket = new TokenBucket(config.RateLimit.ClipBurst, config.RateLimit.ClipTokensPerSecond, processStart);
@@ -98,11 +98,11 @@ public sealed class UserHub
                 catch (OperationCanceledException) { }
                 catch (Exception exception)
                 {
-                    server.Logger.LogError(
+                    coordinator.Logger.LogError(
                         exception,
                         "User loop failed; rebuilding hub. username={Username}",
                         Username);
-                    server.RebuildHub(this);
+                    coordinator.RebuildHub(this);
                 }
             });
         }
@@ -140,7 +140,7 @@ public sealed class UserHub
                 }
                 break;
             case DisconnectJob disconnectJob:
-                server.CancelConnection(disconnectJob.Connection, disconnectJob.Reason);
+                coordinator.CancelConnection(disconnectJob.Connection, disconnectJob.Reason);
                 break;
         }
     }
@@ -217,7 +217,7 @@ public sealed class UserHub
         BroadcastWelcome(nowUtc);
 
         // Spec §6.2: empty hubs that survived until the recovery window closes are now removed.
-        server.Registry.RemoveIfEmpty(this, allowDuringRecovery: true);
+        coordinator.RemoveEmptyHubAfterRecovery(this);
 
         MarkActivity(nowUtc);
     }
@@ -268,7 +268,7 @@ public sealed class UserHub
 
         if (SeenIds.TryGetResult(clip.Id, out _))
         {
-            server.Logger.LogWarning(
+            coordinator.Logger.LogWarning(
                 "Replacing reused clip id. username={Username} clipId={ClipId} clientId={ClientId} previousVersion={PreviousVersion}",
                 Username,
                 clip.Id,
@@ -278,7 +278,7 @@ public sealed class UserHub
 
         if (!ClipBucket.TryAcquire(nowUtc))
         {
-            server.Logger.LogSecurityEvent("reject",
+            coordinator.Logger.LogSecurityEvent("reject",
                 ("username", Username),
                 ("code", "rate_limited"),
                 ("bytes", Encoding.UTF8.GetByteCount(clip.Payload)));
@@ -296,7 +296,7 @@ public sealed class UserHub
         var latest = new LatestText(clip.Payload, next, clip.Hash, clip.Encrypted, sender.ClientId, sender.ClientName, nowUtc);
         Latest = latest;
         SeenIds.RememberId(clip.Id, latest);
-            server.Logger.LogSecurityEvent("clip",
+            coordinator.Logger.LogSecurityEvent("clip",
             ("username", Username),
             ("version", latest.Version),
             ("clipId", clip.Id),
@@ -317,7 +317,7 @@ public sealed class UserHub
             }
         }
 
-        server.Logger.LogInformation(
+        coordinator.Logger.LogInformation(
             "Clip broadcast. username={Username} version={Version} clipId={ClipId} recipients=[{Recipients}]",
             Username,
             next,
@@ -351,5 +351,6 @@ public sealed class UserHub
         }
     }
 }
+
 
 
