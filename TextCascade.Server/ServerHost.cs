@@ -57,16 +57,38 @@ public static class ServerHost
 
         using (certificate)
         {
+            var app = CreateApp(args, config, users, stateStore, hasher: null, clock: null, certificate: certificate);
+            using var userFileWatcher = new UserFileWatcher(config.Files.UsersFile, app.Services.GetRequiredService<SyncServer>(), app.Logger);
+            userFileWatcher.Start();
+            app.Run();
+        }
+        return Ok;
+    }
+
+    public static WebApplication CreateApp(
+        string[] args,
+        RuntimeConfig config,
+        UsersFile users,
+        RuntimeStateStore stateStore,
+        IPasswordHasher? hasher = null,
+        IClock? clock = null,
+        LoadedCertificate? certificate = null)
+    {
         var builder = WebApplication.CreateBuilder(args);
-        builder.WebHost.UseKestrel(ConfigureKestrel(config, certificate));
+        if (certificate is not null)
+        {
+            builder.WebHost.UseKestrel(ConfigureKestrel(config, certificate));
+        }
+
         builder.Logging.ClearProviders();
         builder.Logging.AddSimpleConsole(options =>
         {
             options.SingleLine = true;
             options.TimestampFormat = "yyyy-MM-ddTHH:mm:ssZ ";
         });
-        builder.Services.AddSingleton<IPasswordHasher, Argon2PasswordHasher>();
-        builder.Services.AddSingleton<IClock, SystemClock>();
+
+        builder.Services.AddSingleton<IPasswordHasher>(hasher ?? new Argon2PasswordHasher());
+        builder.Services.AddSingleton<IClock>(clock ?? new SystemClock());
         builder.Services.AddSingleton(stateStore);
         builder.Services.AddSingleton(serviceProvider => new SyncServer(
             config,
@@ -88,11 +110,7 @@ public static class ServerHost
         app.MapGet("/api/v1/sync", async context => await SyncEndpoint.HandleAsync(context, config, context.RequestServices.GetRequiredService<SyncServer>()));
         app.MapMethods("/health", new[] { "HEAD" }, () => Results.Json(new { status = "ok" }));
 
-        using var userFileWatcher = new UserFileWatcher(config.Files.UsersFile, app.Services.GetRequiredService<SyncServer>(), app.Logger);
-        userFileWatcher.Start();
-        app.Run();
-        }
-        return Ok;
+        return app;
     }
 
     private static Action<KestrelServerOptions> ConfigureKestrel(RuntimeConfig config, LoadedCertificate certificate)
@@ -203,7 +221,7 @@ internal static class CertificateLoader
     }
 }
 
-internal sealed class LoadedCertificate : IDisposable
+public sealed class LoadedCertificate : IDisposable
 {
     public LoadedCertificate(X509Certificate2 certificate, X509Certificate2Collection chain)
     {
@@ -223,4 +241,5 @@ internal sealed class LoadedCertificate : IDisposable
         }
     }
 }
+
 
