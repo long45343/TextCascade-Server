@@ -30,7 +30,7 @@
 | 密码哈希 | Argon2(id)(`Isopoh.Cryptography.Argon2`) |
 | 用户存储 | `users.json` |
 | 协议子协议 | `textcascade.v1` |
-| 产品版本 | SemVer,当前 `0.3.5` |
+| 产品版本 | SemVer,当前 `0.4.0` |
 
 ### 仓库结构
 
@@ -207,7 +207,7 @@ Built on ASP.NET Core Minimal API with native Kestrel WebSockets, TLS-terminated
 | Password hash | Argon2(id) (`Isopoh.Cryptography.Argon2`) |
 | User store | `users.json` |
 | Subprotocol | `textcascade.v1` |
-| Version | SemVer, currently `0.3.5` |
+| Version | SemVer, currently `0.4.0` |
 
 ### Quick Start
 

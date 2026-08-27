@@ -1,5 +1,6 @@
 ## 项目私有目录,不纳入版本库
-specs/
+!/specs/
+.zcode/
 .trae/
 
 ## .NET 构建产物

@@ -30,7 +30,9 @@ jobs:
         run: dotnet build TextCascade.Server.slnx --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test TextCascade.Server.slnx --configuration Release --no-build
+        run: >
+          dotnet test TextCascade.Server.slnx --configuration Release --no-build
+          --filter "Category!=NetworkIntegration"
 
       - name: Resolve version
         id: version
