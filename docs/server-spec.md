@@ -408,6 +408,7 @@ Upgrade: websocket
 - 客户端不携带版本号；版本由服务端按用户处理顺序生成。
 - 空文本、非法 UTF-8、结构缺字段、超帧、超文本、限流超限均拒绝。
 - `payload` 对服务端 opaque；`encrypted=true` 时服务端不解析内容。
+- 客户端 E2E 载荷约定（桌面端 v2.3.0 起固化）：`encrypted=true` 时 payload 为紧凑 JSON，含 `nonce`/`ciphertext`/`tag` 三个 Base64 字段；AES-256-GCM，nonce 固定 12 字节（96-bit）、tag 固定 16 字节、无 AAD，密钥由密码 PBKDF2 派生；非 12 字节 nonce 客户端拒收。服务端不解析、不校验该结构，仅透传。
 - 发送队列容量按消息条数计算，默认 16；队列满立即取消连接，不补发 error 或 close frame。
 - 慢设备延迟到达的旧 clip 仍会获得新版本并覆盖最新值；这是最新值语义的预期行为，客户端需自行处理可能的回滚。
 
