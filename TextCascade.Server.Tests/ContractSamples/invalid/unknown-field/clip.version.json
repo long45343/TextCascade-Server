@@ -1,0 +1,8 @@
+{
+  "type": "clip",
+  "id": "clip-1",
+  "payload": "text",
+  "encrypted": false,
+  "hash": "sha256-hex",
+  "version": 12
+}

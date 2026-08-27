@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-27
+
+### Added
+- Contract test suite with JSON sample corpus (`ContractSamples/`) covering duplicate fields, unknown fields, illegal number forms, depth-4 nesting, and invalid UTF-8, plus byte-level serialization invariants for welcome/clip/ack/ping/error/token payloads.
+- Network integration test suite (`Category=NetworkIntegration`, 12 cases) over real Kestrel TLS with runtime-generated self-signed certificates: WSS handshake, TLS 1.2/1.3 protocol probes, random port binding, real frame fragmentation, oversize/zero-length frame closes (1009), server restart with token direct reconnect and persisted-version baseline, snapshot election restore, and graceful-shutdown bye/1001 chain.
+- Slow-hash smoke tests (`Category=SlowHash`) exercising the real Argon2 Hash/Verify/NeedsRehash chain with production parameters.
+- Unit tests closing spec §10.1 gaps: token duplicate-field/illegal-number/range rejection, CLI watermark allocation, delete-and-recreate watermark behavior, revoke and overflow fail-fast with byte-identical file preservation, `WithVersion` immutability, and behavior-level duplicate-id idempotency (drained token bucket still acks duplicates; reused id with new content treated as fresh message).
+
+### Changed
+- CI main test job now includes the SlowHash category and excludes only `Category=NetworkIntegration`, which runs in a dedicated CI job.
+- Release workflow test step aligned with the same category filter.
+- Server spec (`docs/server-spec.md`) rewritten to match v0.3.5 implementation: hot user-file reload, RuntimeStateStore version persistence, content-comparing clip idempotency semantics, 10-minute idle hub recycling, actual log event fields, and a new implementation-gap ledger (§15). Never-implemented items (benchmark project, `server_stop` event, performance target table) removed.
+- Added `specs/test-and-contract-spec.md` (function-level test and contract specification) and `specs/spec-decisions.md` (decision record for the spec alignment).
+
 ## [0.3.5] - 2026-08-22
 
 ### Changed

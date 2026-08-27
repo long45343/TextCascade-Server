@@ -1,0 +1,12 @@
+{
+  "type": "hello",
+  "clientId": "windows-a",
+  "clientName": "",
+  "lastServerVersion": 0,
+  "snapshot": {
+    "payload": "clipboard text",
+    "encrypted": true,
+    "hash": "sha256-hex",
+    "localModifiedAtUtc": "2026-08-18T10:00:00+02:00"
+  }
+}
