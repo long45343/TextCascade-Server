@@ -721,3 +721,7 @@ Kestrel TLS、结构化日志与脱敏、登录与消息限流、框架依赖单
 5. `ServerHost.CreateApp(certificate:null)` 的明文测试缝隙（仅 InternalsVisibleTo 可达）。
 6. ApplyClip 中 duplicateId 且 Latest 为 null 的兜底分支不可达（死分支）。
 7. §10 中标注"待补齐/补齐中"的测试项以 specs/test-and-contract-spec.md 落地为准。
+8. 优雅停机对每个连接的 `CloseAsync` close 握手等待无超时：有静默客户端在线时，停机阶段实测可达 34 秒（perf.md S7）；§7 的"等待最多 2 秒"仅覆盖握手完成后的 drain。
+9. 发送队列满的熔断路径（`MarkClosed` + `Cts.Cancel`）不产生 disconnect 安全事件：后续 `CancelConnection` 因 `MarkClosed` 已置位而提前返回，被熔断的连接在日志中不可见（perf.md S6）。
+
+实测性能数据见仓库根目录 [perf.md](../perf.md)。

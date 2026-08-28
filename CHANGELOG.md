@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Documentation
-- Added bilingual (中文/English) performance test specification `perf.md`: reintroduces the performance targets with executable scenarios, sampling methodology, k6 sketch, and a results template; `docs/server-spec.md` §9 now defers to it.
+- Rewrote `perf.md` as a bilingual (中文/English) actual performance measurement report for v0.4.0 on the production VPS: 1KB broadcast p95 3.5 ms (8.6× headroom), 512KB p95 103 ms, idle CPU 0.08%, cold start 2 s; memory targets (P1/P2) recorded as unmet and flagged for revision; the 1000-connection scenario is documented as untestable on a 1.6 GB same-host environment after it exhausted memory and forced a VM reset.
+- Added `tools/perf_probe.py`, a stdlib-only asyncio WSS probe used for the measurements (hold/latency/slow-consumer scenarios).
+- Recorded two implementation findings in `docs/server-spec.md` §15: unbounded shutdown close-handshake wait (34 s stop phase observed) and silent queue-full abort without a disconnect security event.
 
 ## [0.4.0] - 2026-08-27
 
