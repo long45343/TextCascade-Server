@@ -5,8 +5,8 @@
 测量工具 / Tooling：[tools/perf_probe.py](tools/perf_probe.py)（纯标准库 asyncio WSS 探针 / stdlib-only asyncio WSS probe）  
 关联 / Related：[docs/server-spec.md](docs/server-spec.md) §9、§15；[specs/spec-decisions.md](specs/spec-decisions.md)
 
-> 摘要 / Summary：延迟与 CPU 表现优秀（1KB 广播 p95 3.5ms，8.6 倍余量；空闲 CPU 0.08%）；冷启动 2 秒达标；内存目标（P1/P2）未达标——.NET 运行时基线与每连接真实成本决定了旧目标定得过紧；1000 并发在该 1.6GB 内存的同机环境不可测（触发宿主机硬重启）。另发现两个实现层问题（停机 close 握手无超时、队列满熔断无日志），已记入 spec §15。  
-> **Summary**：Latency and CPU are excellent (1KB broadcast p95 3.5 ms — 8.6× headroom; idle CPU 0.08%); cold start meets the 2 s target; the memory targets (P1/P2) are not met — the .NET runtime baseline and the real per-connection cost show the old targets were too tight; 1000 concurrent connections is untestable on this 1.6 GB same-host environment (the VM hard-reset). Two implementation findings (unbounded shutdown close-handshake wait; silent queue-full abort without logging) are recorded in spec §15.
+> 摘要 / Summary：延迟与 CPU 表现优秀（1KB 广播 p95 3.5ms，8.6 倍余量；空闲 CPU 0.08%）；冷启动 2 秒达标；内存目标（P1/P2）未达标——.NET 运行时基线与每连接真实成本决定了旧目标定得过紧；1000 并发在该 1.6GB 内存的同机环境不可测（触发宿主机硬重启）。另发现两个实现层问题（停机 close 握手无超时、队列满熔断无日志），已记入 spec §15。Windows 本机补测 1000 并发通过（10 分钟零断连、+211 MB），并顺带发现并修复了 Windows TLS 临时密钥缺陷。  
+> **Summary**：Latency and CPU are excellent (1KB broadcast p95 3.5 ms — 8.6× headroom; idle CPU 0.08%); cold start meets the 2 s target; the memory targets (P1/P2) are not met — the .NET runtime baseline and the real per-connection cost show the old targets were too tight; 1000 concurrent connections is untestable on this 1.6 GB same-host environment (the VM hard-reset). Two implementation findings (unbounded shutdown close-handshake wait; silent queue-full abort without logging) are recorded in spec §15. A follow-up run on a local Windows machine (32 GB) passed the 1000-connection scenario (10 minutes, zero disconnects, +211 MB) and surfaced a Windows TLS ephemeral-key defect that has been fixed.
 
 ---
 
@@ -37,7 +37,7 @@
 | P5 | S8 空闲 CPU | 60 秒均值（两轮） | ≈ 0% | **0.08%**（5 ticks / 60 s） | ✓ 达标 |
 | P6 | S7 冷启动 | 应用启动阶段（Started → listening） | < 2 s | **2 s**（三次重启一致） | ✓ 达标（临界） |
 | P7 | 恢复窗口 | snapshot_window_seconds | 3 s | 配置常量，功能由集成测试覆盖 | —（不适用） |
-| P8 | S5 1000 并发 | 10 分钟稳定性 | 无断连 | **未完成：~200 连接时 VM 崩溃硬重启** | ⚠ 环境不可测 |
+| P8 | S5 1000 并发 | 10 分钟稳定性 | 无断连 | **Windows 本机通过**：0 错误、1000/1000 存活、+211 MB（Linux VPS 同机环境不可测，见 S5 明细） | ✓ 达标（Windows 32 GB） |
 | — | S6 慢消费者隔离 | A 的 p95（B 停读 45 秒） | 不受影响 | **7.0–7.9 ms**（基线 6–17 ms）；B 在 ~16 s 被静默熔断 | ✓ 隔离有效 |
 
 ### 3. 各场景明细
@@ -51,6 +51,10 @@
 **S4 512KB 广播延迟**：200 样本全数回收。p95 103 ms，主要成本在 512KB JSON 的序列化/转义与两次 512KB TLS 记录写，2.4 倍余量达标。
 
 **S5 1000 并发连接（未完成，有生产影响）**：进程基线 128256 kB 起步。SSH 会话在 ~200 连接时被重置，随后整机失去响应约 40 分钟（SSH banner 超时、8443 无响应），01:39 宿主机 watchdog 硬重启恢复。原因：同机负载端（Python 1000 并发 TLS 连接自身需数百 MB）+ 服务端（按 S2 外推 1000 连接 ≈ +660 MB）合计超出 1.6 GB 物理内存，触发内存耗尽。**生产影响披露**：期间真实用户设备约 40 分钟无法连接。结论：P8 需要跨机负载端或 ≥4 GB 内存的主机才能度量；按 S2 外推，服务端本身承载 1000 连接（+660 MB）在 2 GB 以上主机是可行的。
+
+**S5 补测（Windows 本机，2026-08-29）**：环境为 Windows x64 / 32 GB RAM，openssl 自签无密码 PFX，二进制含 Windows TLS 修复（见 F5）。结果：1000 连接全部建立（~90 秒完成握手）、0 错误、10 分钟保持期间 19576/19000 心跳 pong 全响应（下限 19000 = 1000 连接 × 19 个周期，超出部分为时钟取整）；RSS 曲线 105 MB（基线）→ 稳态 262–285 MB → 结束 316 MB，**增量 ≈ 211 MB（≈211 KB/连接）**，仅为 Linux 实测值（660 KB/连接）的三分之一（Kestrel/TLS 缓冲策略差异 + GC 行为不同）。全程服务日志无任何错误。**P8 判定：通过。**
+
+顺带发现并修复 **F5（Windows TLS 缺陷）**：首次本地部署时 WSS 完全无法握手——`CertificateLoader` 的 `EphemeralKeySet` 在 Windows 上被 SChannel 拒绝（"platform does not support ephemeral keys"，0x8009030E），而 Linux/OpenSSL 不受影响，因此 VPS 部署从未暴露此问题。修复：Windows 上 PFX 使用 `DefaultKeySet`（持久密钥），PEM 加载后重导出为持久密钥；Linux 保持原状。spec §2.1 声明支持的 Windows Service 托管形态由此才真正可用。
 
 **S6 慢消费者隔离**：32KB clip @ 50/s（1.6 MB/s）。基线 p95 17 ms（含 JIT 噪声），B 停读后 A 的 p95 稳定在 7.0–7.9 ms——完全隔离。B 在 **~16 秒**被服务端熔断断开（观测：established 3→2 且无 disconnect 日志；回环内核缓冲自调优 ~10 MB 吸收了初段流量，之后 16 条发送队列填满触发熔断）。两个发现：
 
@@ -68,7 +72,8 @@
 | F1 | 停机关闭握手等待无超时（实测 34 秒） | 重启/升级时拖长停机窗口 | `CloseConnectionAsync` 的 `CloseAsync` 加超时（如 2 秒）后走 abort；已记入 spec §15 |
 | F2 | 队列满熔断不产生 disconnect 日志 | 被熔断连接在安全日志中不可见 | 熔断路径补一条安全事件；已记入 spec §15 |
 | F3 | P1/P2 内存目标过紧 | 目标不可达 | 修订目标为 P1 < 150 MB、P2 < 100 MB（100 连接），或立项做内存优化 |
-| F4 | P8 在 1.6GB 同机环境不可测 | 无法验证 1000 并发 | 跨机负载端，或 ≥4 GB 主机重测 |
+| F4 | P8 在 1.6GB 同机环境不可测 | 无法验证 1000 并发 | 已解决：Windows 本机补测通过（见 S5 补测）；VPS 上仍建议跨机负载端 |
+| F5 | Windows 上 `EphemeralKeySet` 导致 WSS 握手必然失败（0x8009030E） | spec §2.1 声明的 Windows Service 托管不可用 | 已修复：Windows 用 `DefaultKeySet`（PFX）+ PEM 重导出持久密钥；Linux 不变 |
 
 ### 5. 复现步骤
 
@@ -128,7 +133,7 @@ Same-host loopback excludes network jitter, but the generator shares the 2 vCPUs
 | P5 | S8 idle CPU | 60 s average (two runs) | ≈ 0% | **0.08%** (5 ticks / 60 s) | ✓ pass |
 | P6 | S7 cold start | Application start phase (Started → listening) | < 2 s | **2 s** (consistent across 3 restarts) | ✓ pass (borderline) |
 | P7 | Recovery window | snapshot_window_seconds | 3 s | config constant; correctness covered by tests | — (n/a) |
-| P8 | S5 1000 concurrent | 10-minute stability | no disconnects | **not completed — VM hard-reset at ~200 connections** | ⚠ untestable here |
+| P8 | S5 1000 concurrent | 10-minute stability | no disconnects | **passed on local Windows**: 0 errors, 1000/1000 alive, +211 MB (Linux VPS same-host environment untestable, see S5 details) | ✓ pass (Windows 32 GB) |
 | — | S6 slow-consumer isolation | A's p95 (B stalled 45 s) | unaffected | **7.0–7.9 ms** (baseline 6–17 ms); B silently aborted at ~16 s | ✓ isolation holds |
 
 ### 3. Scenario Details
@@ -142,6 +147,10 @@ Same-host loopback excludes network jitter, but the generator shares the 2 vCPUs
 **S4 512KB broadcast latency**: all 200 samples recovered. p95 103 ms, dominated by serializing/escaping the 512KB JSON and two 512KB TLS record writes; 2.4× headroom, within target.
 
 **S5 1000 concurrent connections (not completed; production impact)**: started from a fresh 128256 kB baseline. The SSH session was reset at ~200 connections; the whole machine then became unresponsive for ~40 minutes (SSH banner timeouts, no response on 8443) until the provider watchdog hard-reset the VM at 01:39. Root cause: a same-host generator (Python holding 1000 concurrent TLS connections itself needs several hundred MB) plus the server (extrapolating from S2, 1000 connections ≈ +660 MB) exceeded the 1.6 GB physical memory. **Production impact disclosure**: real user devices could not connect for ~40 minutes. Conclusion: P8 requires an off-host generator or a host with ≥4 GB RAM; extrapolating from S2, the server itself holding 1000 connections (+660 MB) is feasible on a 2 GB+ host.
+
+**S5 follow-up run (local Windows, 2026-08-29)**: environment was Windows x64 / 32 GB RAM, an openssl self-signed passwordless PFX, and a binary containing the Windows TLS fix (see F5). Result: all 1000 connections established (handshakes completed within ~90 s), 0 errors, and during the 10-minute hold 19576/19000 heartbeat pongs were answered (floor = 1000 connections × 19 cycles). RSS curve: 105 MB (baseline) → 262–285 MB steady → 316 MB at the end — a **delta of ≈211 MB (≈211 KB/connection)**, one third of the Linux figure (660 KB/connection) due to different Kestrel/TLS buffer behavior and GC. The server log contained no errors. **P8 verdict: pass.**
+
+This run also surfaced and fixed **F5 (Windows TLS defect)**: the first local deployment could not complete a single WSS handshake — `CertificateLoader`'s `EphemeralKeySet` is rejected by SChannel on Windows ("platform does not support ephemeral keys", 0x8009030E), while Linux/OpenSSL is unaffected, which is why the VPS deployment never exposed it. Fix: on Windows the PFX branch now uses `DefaultKeySet` (persisted key) and PEM-loaded certificates are re-exported to a persisted key; Linux behavior is unchanged. Spec §2.1's declared Windows Service hosting shape is only truly usable with this fix.
 
 **S6 slow-consumer isolation**: 32KB clips @ 50/s (1.6 MB/s). Baseline p95 17 ms (includes JIT noise); with B stalled, A's p95 held at 7.0–7.9 ms — fully isolated. B was silently aborted by the server at **~16 s** (observed: established count 3→2 with no disconnect log; the autotuned ~10 MB loopback kernel buffers absorbed the initial burst, after which the 16-message send queue filled and triggered the abort). Two findings:
 
@@ -159,7 +168,8 @@ Same-host loopback excludes network jitter, but the generator shares the 2 vCPUs
 | F1 | Shutdown close-handshake wait is unbounded (34 s measured) | Prolongs the stop window on restarts/upgrades | Add a timeout (e.g. 2 s) to `CloseConnectionAsync`'s `CloseAsync`, then abort; recorded in spec §15 |
 | F2 | Queue-full abort produces no disconnect log | Aborted connections are invisible in security logs | Emit a security event on the abort path; recorded in spec §15 |
 | F3 | P1/P2 memory targets are too tight | Targets unreachable | Revise to P1 < 150 MB and P2 < 100 MB (100 connections), or start a memory-optimization effort |
-| F4 | P8 untestable on a 1.6 GB same-host environment | 1000 concurrent connections unverifiable | Off-host load generator, or retest on a ≥4 GB host |
+| F4 | P8 untestable on a 1.6 GB same-host environment | 1000 concurrent connections unverifiable | Resolved: passed on local Windows (see S5 follow-up); an off-host generator is still recommended for the VPS |
+| F5 | `EphemeralKeySet` made WSS handshakes always fail on Windows (0x8009030E) | The Windows Service hosting shape declared in spec §2.1 was unusable | Fixed: `DefaultKeySet` for PFX on Windows + PEM re-export to a persisted key; Linux unchanged |
 
 ### 5. Reproduction
 

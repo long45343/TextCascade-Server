@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- TLS server authentication failed on Windows with "platform does not support ephemeral keys" (0x8009030E): `CertificateLoader` now loads PFX certificates with a persisted key set (`DefaultKeySet`) on Windows (Linux keeps `EphemeralKeySet`), and PEM-loaded certificates are re-exported to a persisted key on Windows. Spec §2.1's Windows Service hosting shape required this to be usable. Found while benchmarking 1000 concurrent connections on a local Windows deployment.
+
 ### Documentation
+- perf.md: added the Windows local 1000-connection result — 10-minute hold with 0 errors and all 1000 connections alive, RSS delta ≈211 MB (≈211 KB/connection, one third of the Linux figure); P8 is now verified.
 - Rewrote `perf.md` as a bilingual (中文/English) actual performance measurement report for v0.4.0 on the production VPS: 1KB broadcast p95 3.5 ms (8.6× headroom), 512KB p95 103 ms, idle CPU 0.08%, cold start 2 s; memory targets (P1/P2) recorded as unmet and flagged for revision; the 1000-connection scenario is documented as untestable on a 1.6 GB same-host environment after it exhausted memory and forced a VM reset.
 - Added `tools/perf_probe.py`, a stdlib-only asyncio WSS probe used for the measurements (hold/latency/slow-consumer scenarios).
 - Recorded two implementation findings in `docs/server-spec.md` §15: unbounded shutdown close-handshake wait (34 s stop phase observed) and silent queue-full abort without a disconnect security event.
