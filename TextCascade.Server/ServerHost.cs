@@ -151,7 +151,12 @@ internal static class CertificateLoader
         else if (path.EndsWith(".pfx", StringComparison.OrdinalIgnoreCase)
                  || path.EndsWith(".p12", StringComparison.OrdinalIgnoreCase))
         {
-            var chain = X509CertificateLoader.LoadPkcs12CollectionFromFile(path, password: null, X509KeyStorageFlags.EphemeralKeySet);
+            // SChannel cannot perform server-side TLS with an ephemeral key; keep the
+            // key persisted on Windows and ephemeral elsewhere (spec §2.1 supports both hosts).
+            var keyStorageFlags = OperatingSystem.IsWindows()
+                ? X509KeyStorageFlags.DefaultKeySet
+                : X509KeyStorageFlags.EphemeralKeySet;
+            var chain = X509CertificateLoader.LoadPkcs12CollectionFromFile(path, password: null, keyStorageFlags);
             var certificateWithKey = chain.Cast<X509Certificate2>().FirstOrDefault(item => item.HasPrivateKey);
             if (certificateWithKey is null)
             {
@@ -185,6 +190,13 @@ internal static class CertificateLoader
             }
 
             var certificateWithKey = X509Certificate2.CreateFromPemFile(certificatePath, keyPath);
+            if (OperatingSystem.IsWindows())
+            {
+                // Re-import via a PFX export so the private key is persisted; SChannel
+                // rejects the ephemeral key produced by CreateFromPemFile on Windows.
+                using var ephemeral = certificateWithKey;
+                certificateWithKey = new X509Certificate2(certificateWithKey.Export(X509ContentType.Pfx));
+            }
             var originalLeaf = chain.Cast<X509Certificate2>().FirstOrDefault(c => c.Equals(certificateWithKey));
             if (originalLeaf is not null)
             {
