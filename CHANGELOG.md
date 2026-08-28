@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- Added bilingual (中文/English) performance test specification `perf.md`: reintroduces the performance targets with executable scenarios, sampling methodology, k6 sketch, and a results template; `docs/server-spec.md` §9 now defers to it.
+
 ## [0.4.0] - 2026-08-27
 
 ### Added
