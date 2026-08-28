@@ -1,288 +1,191 @@
-# 性能测试规范 / Performance Test Specification
+# 性能实测报告 / Performance Measurement Report
 
-状态 / Status：测量契约与结果记录模板（Measurement contract and results template），v0.4.0  
-日期 / Date：2026-08-27
+状态 / Status：v0.4.0 首次实测（/ First measured run on v0.4.0）  
+日期 / Date：2026-08-29（ measurements executed 2026-08-27 23:50 – 2026-08-29 01:50 CST）  
+测量工具 / Tooling：[tools/perf_probe.py](tools/perf_probe.py)（纯标准库 asyncio WSS 探针 / stdlib-only asyncio WSS probe）  
+关联 / Related：[docs/server-spec.md](docs/server-spec.md) §9、§15；[specs/spec-decisions.md](specs/spec-decisions.md)
 
-> **说明 / Note**：基准压测程序（独立 Benchmark 项目）尚未实现；本文件先于工具存在，定义性能目标、场景、测量方法与结果记录格式，作为后续构建度量设施的契约。  
-> **Note**：The standalone benchmark project does not exist yet. This document precedes the tooling and defines the performance targets, scenarios, measurement methodology, and the results format — the contract for building the measurement harness.
+> 摘要 / Summary：延迟与 CPU 表现优秀（1KB 广播 p95 3.5ms，8.6 倍余量；空闲 CPU 0.08%）；冷启动 2 秒达标；内存目标（P1/P2）未达标——.NET 运行时基线与每连接真实成本决定了旧目标定得过紧；1000 并发在该 1.6GB 内存的同机环境不可测（触发宿主机硬重启）。另发现两个实现层问题（停机 close 握手无超时、队列满熔断无日志），已记入 spec §15。  
+> **Summary**：Latency and CPU are excellent (1KB broadcast p95 3.5 ms — 8.6× headroom; idle CPU 0.08%); cold start meets the 2 s target; the memory targets (P1/P2) are not met — the .NET runtime baseline and the real per-connection cost show the old targets were too tight; 1000 concurrent connections is untestable on this 1.6 GB same-host environment (the VM hard-reset). Two implementation findings (unbounded shutdown close-handshake wait; silent queue-full abort without logging) are recorded in spec §15.
 
 ---
 
 ## 第一部分：中文
 
-### 1. 背景与目的
+### 1. 测试环境
 
-`docs/server-spec.md` 原第 9 节的性能指标表在 v0.4.0 规格对齐时移除，原因是项目从未建立度量手段，未度量数字等于虚假承诺。本文件把目标重新引入，但赋予其可执行的语义：每一项目标都绑定明确的场景、采样方法与判定标准；结果填入第 6 节模板，未填写的行即"未验证"。
+| 项 | 值 |
+|---|---|
+| 硬件 | 2 vCPU（Intel Xeon Platinum）/ 1.6 GB 内存（LongCloud VPS） |
+| 系统 | Ubuntu 24.04.4 LTS，内核 6.8.0-63-generic |
+| 运行时 | .NET 10.0.11（框架依赖单文件，`TextCascade.Server` v0.4.0+fb33861） |
+| 服务形态 | systemd（`textcascade-server.service`），WSS + 生产自签证书，端口 8443 |
+| 负载端 | 与服务同机，回环 127.0.0.1，`tools/perf_probe.py`（Python 3.12 asyncio） |
+| 服务配置 | 默认值 + `[rate_limit] clip_burst/clip_tokens_per_second` 临时调至 5000/5000（仅延迟与慢消费者场景，测后已恢复） |
 
-设计性质（目标为何可达，来自架构）：
+同机回环排除了网络抖动，但负载端与被测端共享 2 个 vCPU 与内存——并发类场景（S5）受此制约。
 
-- 广播每用户仅做一次 UTF-8 序列化，同一份字节投递到所有连接；
-- 每连接发送队列有界（默认 16 条），慢连接立即取消，内存上限可预测；
-- 每用户一个 Channel 单消费者，无锁竞争路径；
-- 空闲期固定开销：1 秒一次的心跳扫描器、RuntimeStateStore 每 5 秒脏检查刷盘、UserFileWatcher 每 30 秒轮询兜底。
+### 2. 结果总表
 
-### 2. 性能目标
+| # | 场景 | 指标 | 目标 | 实测 | 判定 |
+|---|---|---|---|---|---|
+| P1 | S1 基础内存 | RSS（新进程，60s 预热） | < 50 MB | **125–131 MB** | ✗ 未达标 |
+| P2 | S2 100 空闲连接 | RSS 增量（5 分钟，全部存活） | < 20 MB | **+66 MB**（≈660 KB/连接） | ✗ 未达标 |
+| P3 | S3 1KB 广播 | broadcast_lag p95（1000 样本） | < 30 ms | **3.5 ms**（p50 1.87 / p99 5.1 / max 11.8） | ✓ 达标（8.6× 余量） |
+| P3b | S3 附带 | ack_rtt p95 | 参考 | 4.0 ms | — |
+| P4 | S4 512KB 广播 | broadcast_lag p95（200 样本） | < 250 ms | **103.2 ms**（p50 87.3 / p99 138 / max 157） | ✓ 达标（2.4× 余量） |
+| P5 | S8 空闲 CPU | 60 秒均值（两轮） | ≈ 0% | **0.08%**（5 ticks / 60 s） | ✓ 达标 |
+| P6 | S7 冷启动 | 应用启动阶段（Started → listening） | < 2 s | **2 s**（三次重启一致） | ✓ 达标（临界） |
+| P7 | 恢复窗口 | snapshot_window_seconds | 3 s | 配置常量，功能由集成测试覆盖 | —（不适用） |
+| P8 | S5 1000 并发 | 10 分钟稳定性 | 无断连 | **未完成：~200 连接时 VM 崩溃硬重启** | ⚠ 环境不可测 |
+| — | S6 慢消费者隔离 | A 的 p95（B 停读 45 秒） | 不受影响 | **7.0–7.9 ms**（基线 6–17 ms）；B 在 ~16 s 被静默熔断 | ✓ 隔离有效 |
 
-| # | 指标 / Metric | 目标 / Target |
-|---|---|---|
-| P1 | 基础进程内存（无客户端，预热后 RSS） | < 50 MB |
-| P2 | 100 个空闲连接内存增量（保持 5 分钟） | < 20 MB |
-| P3 | 1KB 文本广播单向延迟 p95（同机回环） | < 30 ms |
-| P4 | 512KB 文本广播单向延迟 p95（同机回环） | < 250 ms |
-| P5 | 空闲 CPU 占用（60 秒均值） | ≈ 0%（心跳扫描、状态刷盘与用户表轮询除外） |
-| P6 | 冷启动时间（进程拉起 → `/health` 返回 200） | < 2 s |
-| P7 | 重启恢复窗口 | 固定 3 秒（`snapshot_window_seconds`，功能正确性由测试保障） |
-| P8 | 1000 并发连接稳定性（保持 10 分钟） | 无断连、无错误日志、内存增量可解释 |
+### 3. 各场景明细
 
-### 3. 测试环境要求
+**S1 基础内存**：三次重启后 RSS 分别为 127872 / 128256 / 131328 kB；运行 24 小时后为 143852 kB。基线由 .NET 10 运行时、Kestrel、TLS 栈与 22 个线程构成，新进程即为 ~125 MB，说明不是泄漏而是运行时基线。原 50 MB 目标对 ASP.NET Core 应用不现实（判为"目标过紧"而非"实现缺陷"）。
 
-每次记录结果必须附带环境描述，否则结果不可比：
+**S2 100 空闲连接**：新进程 RSS 127872 kB → 195392 kB，增量 67520 kB（≈660 KB/连接）。期间 900/900 心跳 pong 全部响应，零错误。660 KB/连接包含 TLS 流缓冲、Kestrel 每连接管道与 pinned buffer、托管对象。原 20 MB 目标（200 KB/连接）低估了 Kestrel + TLS 的真实成本。
 
-- 硬件：CPU 型号与核数、内存容量（如 2 vCPU / 2 GB VPS）；
-- 系统：OS 与内核版本；
-- 运行时：.NET Runtime 版本、部署形态（框架依赖单文件）、`DOTNET_` 环境变量；
-- 网络：回环（127.0.0.1）或真实局域网，WSS（生产 TLS）或 WS（仅诊断）；
-- 负载端：与被测服务的相对位置（同机 / 另一主机）。
+**S3 1KB 广播延迟**：1000 样本全数回收。`broadcast_lag` p95 = 3.5 ms——服务端路径（解析 → 令牌桶 → 版本自增 → 单次序列化 → 双连接投递）加上两端 TLS 在回环上的开销远低于 30 ms 目标。
 
-参考环境建议：与生产部署一致（systemd + WSS + 自签证书），客户端与服务器同机回环，排除网络抖动。
+**S4 512KB 广播延迟**：200 样本全数回收。p95 103 ms，主要成本在 512KB JSON 的序列化/转义与两次 512KB TLS 记录写，2.4 倍余量达标。
 
-### 4. 测试场景
+**S5 1000 并发连接（未完成，有生产影响）**：进程基线 128256 kB 起步。SSH 会话在 ~200 连接时被重置，随后整机失去响应约 40 分钟（SSH banner 超时、8443 无响应），01:39 宿主机 watchdog 硬重启恢复。原因：同机负载端（Python 1000 并发 TLS 连接自身需数百 MB）+ 服务端（按 S2 外推 1000 连接 ≈ +660 MB）合计超出 1.6 GB 物理内存，触发内存耗尽。**生产影响披露**：期间真实用户设备约 40 分钟无法连接。结论：P8 需要跨机负载端或 ≥4 GB 内存的主机才能度量；按 S2 外推，服务端本身承载 1000 连接（+660 MB）在 2 GB 以上主机是可行的。
 
-| # | 场景 | 步骤 | 采样 |
+**S6 慢消费者隔离**：32KB clip @ 50/s（1.6 MB/s）。基线 p95 17 ms（含 JIT 噪声），B 停读后 A 的 p95 稳定在 7.0–7.9 ms——完全隔离。B 在 **~16 秒**被服务端熔断断开（观测：established 3→2 且无 disconnect 日志；回环内核缓冲自调优 ~10 MB 吸收了初段流量，之后 16 条发送队列填满触发熔断）。两个发现：
+
+- **熔断静默**：队列满路径直接 `MarkClosed + Cts.Cancel`，后续 `CancelConnection` 因 `MarkClosed` 已置位而提前返回，不产生任何 disconnect 安全事件——被熔断的连接在日志中不可见（已记入 spec §15）。
+- **熔断延迟**：16 条队列的熔断点受内核 socket 缓冲（自动调优可达 ~10 MB）放大，取决于消息尺寸与速率，"队列满即断"在回环场景实际表现为"缓冲满即断"。
+
+**S7 冷启动**：三次重启的应用启动阶段（journal `Started` → `Now listening`）均为 **2 秒**，达标但已贴线。另发现：`systemctl restart` 端到端耗时 **35.6 秒**（有真实客户端在线时）——旧实例的关闭阶段花了 34 秒，原因是 `ShutdownAsync` 对每个连接 `CloseAsync` 等待 close 握手完成且无超时，静默客户端会拖住整个停机流程；spec §7 的"等待最多 2 秒"只覆盖 close 握手完成后的 drain。已记入 spec §15。
+
+**S8 空闲 CPU**：两轮 60 秒各 5 个时钟 tick（100 tick = 1 CPU 秒）→ 0.083% CPU。心跳扫描器（1 Hz）、状态刷盘（5 秒周期，空闲时无脏数据）、用户表轮询（30 秒周期）的固定开销可忽略。
+
+### 4. 发现与后续
+
+| # | 发现 | 影响 | 建议 |
 |---|---|---|---|
-| S1 | 基础内存 | 启动服务，无客户端，预热 60 秒后读 RSS | 单点 ×3 取中位 |
-| S2 | 100 空闲连接 | 建 100 个 WSS 连接并发送合法 hello，保持 5 分钟 | 前后 RSS 差值 |
-| S3 | 1KB 广播延迟 | 同用户 2 连接：A 发 1KB clip，A 记 ACK 往返，B 记广播单向滞后 | 预热丢弃 50，采样 ≥1000，间隔 20ms |
-| S4 | 512KB 广播延迟 | 同 S3，payload 512KB | 预热丢弃 10，采样 ≥200，间隔 100ms |
-| S5 | 1000 并发连接 | 建 1000 连接完成 hello，保持 10 分钟 | 全程 RSS/CPU 曲线 + 断连计数 |
-| S6 | 慢消费者隔离 | A 每 20ms 发 4KB clip；B 建立后停止读 socket 10 秒 | A 的 p95 不受影响；B 应在队列满（16 条）后被断开 |
-| S7 | 冷启动 | `systemctl restart`，从进程拉起到 `/health` 200 | 3 次取中位 |
-| S8 | 空闲 CPU | 无客户端 60 秒，取 `ps -o %cpu` 均值 | 单点 ×3 取中位 |
+| F1 | 停机关闭握手等待无超时（实测 34 秒） | 重启/升级时拖长停机窗口 | `CloseConnectionAsync` 的 `CloseAsync` 加超时（如 2 秒）后走 abort；已记入 spec §15 |
+| F2 | 队列满熔断不产生 disconnect 日志 | 被熔断连接在安全日志中不可见 | 熔断路径补一条安全事件；已记入 spec §15 |
+| F3 | P1/P2 内存目标过紧 | 目标不可达 | 修订目标为 P1 < 150 MB、P2 < 100 MB（100 连接），或立项做内存优化 |
+| F4 | P8 在 1.6GB 同机环境不可测 | 无法验证 1000 并发 | 跨机负载端，或 ≥4 GB 主机重测 |
 
-延迟指标定义：
-
-- **ACK 往返（ack_rtt）**：A 端 `send(clip)` 前取时间戳，收到本连接 `clip_ack` 再取，差值即 RTT；
-- **广播单向滞后（broadcast_lag）**：A 端 `send(clip)` 前取 `t0`，B 端收到含该 id 的 `clip` 帧取 `t1`，`t1 - t0` 即单向滞后（同机时钟，无偏差问题；跨主机需先做时钟校准或改测 ACK 往返的一半）。
-
-P3/P4 以 `broadcast_lag` 的 p95 判定；`ack_rtt` 一并记录作参考。
-
-### 5. 执行方法
-
-**内存与 CPU（现成工具即可）**：
+### 5. 复现步骤
 
 ```bash
-# RSS（字节）
+# 1. 上传探针
+scp tools/perf_probe.py root@HOST:/tmp/
+# 2. 创建临时压测用户（测后删除）
+/opt/textcascade-server/TextCascade.Server user add --username perftest --password-stdin \
+  --config /etc/textcascade/textcascade.toml < <(echo PASSWORD)
+# 3. 延迟场景（需要临时调高 [rate_limit]，测后恢复）
+python3 /tmp/perf_probe.py --user perftest --password PASSWORD latency --size 1024 --count 1000 --interval 0.02
+python3 /tmp/perf_probe.py --user perftest --password PASSWORD latency --size 524288 --count 200 --interval 0.1
+# 4. 连接保持与 RSS 采样
 grep VmRSS /proc/$(systemctl show -p MainPID --value textcascade-server)/status
-# systemd 视角内存
-systemctl status textcascade-server --no-pager | grep Memory
-# 60 秒平均 CPU
-ps -o %cpu= -p $(systemctl show -p MainPID --value textcascade-server) --sort=-start_time
-# 更细的 GC/线程池观测（可选）
-dotnet-counters monitor --process-id <pid> System.Runtime
+python3 /tmp/perf_probe.py --user perftest --password PASSWORD hold --count 100 --seconds 300
+# 5. 慢消费者
+python3 /tmp/perf_probe.py --user perftest --password PASSWORD slow --size 32768 --stall 45
+# 6. 清理
+/opt/textcascade-server/TextCascade.Server user delete --username perftest --config /etc/textcascade/textcascade.toml
 ```
 
-**冷启动**：
+注意：S5 类高并发场景勿在与服务同机的低内存主机上执行（见 S5 生产影响披露）。
 
-```bash
-systemctl restart textcascade-server
-# journalctl 中 "Started" 与 "Now listening on" 两条时间戳之差，或循环 curl /health 直到 200
-```
+### 6. 已知限制
 
-**延迟与并发负载**：独立压测程序尚未实现。过渡期任选其一：
-
-1. 通用 WebSocket 压测工具（如 k6）按 S3/S5 参数执行；
-2. 一次性控制台脚本（C# `ClientWebSocket` 或 Python `websockets`），逻辑为：登录 → 建连 → hello → 定时发 clip → 记录 `clip_ack` 时间戳；
-3. 实现 `TextCascade.Server.Benchmark` 控制台项目（持久方案，场景按第 4 节命名 S1–S8）。
-
-k6 示例（S3 的 ACK 往返部分，TOKEN/主机替换后使用；广播滞后需第二个静态接收端）：
-
-```javascript
-import ws from 'k6/ws';
-import { Trend } from 'k6/metrics';
-
-const ackRtt = new Trend('ack_rtt_ms');
-
-export default function () {
-  ws.connect('wss://HOST:8443/api/v1/sync', { headers: { Authorization: 'Bearer TOKEN' } }, (socket) => {
-    socket.on('open', () => {
-      socket.send(JSON.stringify({ type: 'hello', clientId: 'k6-a', clientName: 'k6', lastServerVersion: 0, snapshot: null }));
-      socket.on('message', (raw) => {
-        if (raw.includes('welcome')) {
-          for (let i = 0; i < 1000; i++) {
-            const t0 = Date.now();
-            socket.send(JSON.stringify({ type: 'clip', id: 'c' + i, payload: 'x'.repeat(1024), encrypted: false, hash: 'h' + i }));
-          }
-        } else if (raw.includes('clip_ack')) {
-          ackRtt.add(Date.now() - Number(raw.match(/"id":"c(\d+)"/)[1]) * 20);
-        }
-      });
-    });
-  });
-}
-```
-
-注意：示例按"每 20ms 发一条"的节奏需配合限速循环，实际脚本应使用 `setInterval` 或分批发送；以上仅示意数据采集点。
-
-### 6. 结果记录模板
-
-| 场景 | 指标 | 目标 | 实测 | 环境 | 日期 | 结论 |
-|---|---|---|---|---|---|---|
-| S1 | RSS 中位 | < 50 MB | TBD | TBD | TBD | ☐ |
-| S2 | ΔRSS | < 20 MB | TBD | TBD | TBD | ☐ |
-| S3 | broadcast_lag p95 | < 30 ms | TBD | TBD | TBD | ☐ |
-| S3 | ack_rtt p95 | 参考 | TBD | TBD | TBD | ☐ |
-| S4 | broadcast_lag p95 | < 250 ms | TBD | TBD | TBD | ☐ |
-| S5 | 10 分钟稳定性 | 无断连 | TBD | TBD | TBD | ☐ |
-| S6 | 慢连接隔离 | B 断开且 A p95 达标 | TBD | TBD | TBD | ☐ |
-| S7 | 冷启动中位 | < 2 s | TBD | TBD | TBD | ☐ |
-| S8 | 空闲 CPU 均值 | ≈ 0% | TBD | TBD | TBD | ☐ |
-
-填写规则：环境列引用第 3 节描述的编号；结论列在目标达成时打勾，未达标时在文末追加差距分析（原因 + 归属：实现 / 环境 / 目标本身）。
-
-### 7. 已知限制
-
-- 基准压测程序未实现，过渡期依赖通用工具或临时脚本，采样节奏精度受客户端定时器分辨率影响（Windows 默认 ~15ms）；
-- P7 恢复窗口为配置常量，其"3 秒"语义已在集成测试中验证，本文件只做部署侧确认；
-- 同机回环测量排除了网络抖动，跨主机结果不可直接与回环目标比较；
-- RuntimeStateStore 刷盘（5 秒周期）与 UserFileWatcher 轮询（30 秒周期）是空闲开销的一部分，属预期行为而非回归。
+- 负载端与服务同机，S5 受内存与 CPU 共享制约；跨机测量结果不可与本次回环数值直接比较；
+- 采样节奏受 Python asyncio 定时器影响（Linux 下精度远优于 Windows 的 15ms）；
+- 基线 RSS 受 GC 策略影响，跨 .NET 版本可能漂移；
+- rate_limit 临时调整仅在延迟/慢消费者场景使用，S1/S2/S5/S7/S8 均在默认配置下测量。
 
 ---
 
 ## Part 2: English
 
-### 1. Background and Purpose
+### 1. Test Environment
 
-The performance target table in the original `docs/server-spec.md` §9 was removed during the v0.4.0 spec alignment because the project never had measurement tooling — unmeasured numbers are empty promises. This document reintroduces the targets with executable semantics: every target is bound to a concrete scenario, sampling method, and pass criterion. Results go into the template in section 6; an unfilled row means "not verified".
+| Item | Value |
+|---|---|
+| Hardware | 2 vCPU (Intel Xeon Platinum) / 1.6 GB RAM (LongCloud VPS) |
+| OS | Ubuntu 24.04.4 LTS, kernel 6.8.0-63-generic |
+| Runtime | .NET 10.0.11 (framework-dependent single file, `TextCascade.Server` v0.4.0+fb33861) |
+| Service shape | systemd (`textcascade-server.service`), WSS + production self-signed certificate, port 8443 |
+| Load generator | Same host, loopback 127.0.0.1, `tools/perf_probe.py` (Python 3.12 asyncio) |
+| Service config | Defaults + `[rate_limit] clip_burst/clip_tokens_per_second` temporarily raised to 5000/5000 (latency and slow-consumer scenarios only; restored afterwards) |
 
-Design properties that make the targets achievable (from the architecture):
+Same-host loopback excludes network jitter, but the generator shares the 2 vCPUs and memory with the service — concurrency scenarios (S5) are constrained by this.
 
-- Each broadcast is serialized to UTF-8 once per user; the same bytes are handed to every connection;
-- Per-connection send queues are bounded (16 messages by default) and slow connections are cancelled immediately, keeping the memory ceiling predictable;
-- One single-consumer Channel per user — no lock contention on the hot path;
-- Fixed idle overhead: the 1-second heartbeat scanner, RuntimeStateStore dirty-check flush every 5 seconds, and the UserFileWatcher 30-second polling fallback.
+### 2. Results Summary
 
-### 2. Performance Targets
+| # | Scenario | Metric | Target | Measured | Verdict |
+|---|---|---|---|---|---|
+| P1 | S1 base memory | RSS (fresh process, 60 s warmup) | < 50 MB | **125–131 MB** | ✗ fail |
+| P2 | S2 100 idle connections | RSS delta (5 min, all alive) | < 20 MB | **+66 MB** (≈660 KB/conn) | ✗ fail |
+| P3 | S3 1KB broadcast | broadcast_lag p95 (1000 samples) | < 30 ms | **3.5 ms** (p50 1.87 / p99 5.1 / max 11.8) | ✓ pass (8.6× headroom) |
+| P3b | S3 companion | ack_rtt p95 | reference | 4.0 ms | — |
+| P4 | S4 512KB broadcast | broadcast_lag p95 (200 samples) | < 250 ms | **103.2 ms** (p50 87.3 / p99 138 / max 157) | ✓ pass (2.4× headroom) |
+| P5 | S8 idle CPU | 60 s average (two runs) | ≈ 0% | **0.08%** (5 ticks / 60 s) | ✓ pass |
+| P6 | S7 cold start | Application start phase (Started → listening) | < 2 s | **2 s** (consistent across 3 restarts) | ✓ pass (borderline) |
+| P7 | Recovery window | snapshot_window_seconds | 3 s | config constant; correctness covered by tests | — (n/a) |
+| P8 | S5 1000 concurrent | 10-minute stability | no disconnects | **not completed — VM hard-reset at ~200 connections** | ⚠ untestable here |
+| — | S6 slow-consumer isolation | A's p95 (B stalled 45 s) | unaffected | **7.0–7.9 ms** (baseline 6–17 ms); B silently aborted at ~16 s | ✓ isolation holds |
 
-| # | Metric | Target |
-|---|---|---|
-| P1 | Base process memory (RSS after warmup, no clients) | < 50 MB |
-| P2 | Memory delta with 100 idle connections (held 5 minutes) | < 20 MB |
-| P3 | 1KB text broadcast one-way latency p95 (same-host loopback) | < 30 ms |
-| P4 | 512KB text broadcast one-way latency p95 (same-host loopback) | < 250 ms |
-| P5 | Idle CPU usage (60-second average) | ≈ 0% (excluding heartbeat scan, state flush, user-file polling) |
-| P6 | Cold start (process spawn → `/health` returns 200) | < 2 s |
-| P7 | Restart recovery window | Fixed 3 s (`snapshot_window_seconds`; correctness covered by tests) |
-| P8 | 1000 concurrent connections stability (held 10 minutes) | No disconnects, no error logs, explainable memory delta |
+### 3. Scenario Details
 
-### 3. Environment Requirements
+**S1 base memory**: RSS after three restarts was 127872 / 128256 / 131328 kB; 143852 kB after 24 h of uptime. The baseline consists of the .NET 10 runtime, Kestrel, the TLS stack, and 22 threads — a fresh process is already ~125 MB, so this is a runtime baseline, not a leak. The original 50 MB target is unrealistic for an ASP.NET Core app (judged "target too tight" rather than an implementation defect).
 
-Every recorded result must include its environment description, otherwise results are not comparable:
+**S2 100 idle connections**: fresh RSS 127872 kB → 195392 kB, delta 67520 kB (≈660 KB/connection). All 900/900 expected heartbeat pongs were answered with zero errors. The 660 KB/connection includes TLS stream buffers, Kestrel per-connection pipes and pinned buffers, and managed objects. The original 20 MB target (200 KB/connection) underestimated the real cost of Kestrel + TLS.
 
-- Hardware: CPU model and core count, RAM (e.g. 2 vCPU / 2 GB VPS);
-- OS: distribution and kernel version;
-- Runtime: .NET Runtime version, deployment shape (framework-dependent single file), `DOTNET_*` environment variables;
-- Network: loopback (127.0.0.1) or real LAN; WSS (production TLS) or WS (diagnostics only);
-- Load generator: relative location to the service under test (same host / separate host).
+**S3 1KB broadcast latency**: all 1000 samples recovered. `broadcast_lag` p95 = 3.5 ms — the server path (parse → token bucket → version increment → single serialization → delivery to two connections) plus TLS on both ends stays far below the 30 ms target.
 
-Recommended reference environment: identical to production deployment (systemd + WSS + self-signed certificate), clients on the same host over loopback to exclude network jitter.
+**S4 512KB broadcast latency**: all 200 samples recovered. p95 103 ms, dominated by serializing/escaping the 512KB JSON and two 512KB TLS record writes; 2.4× headroom, within target.
 
-### 4. Scenarios
+**S5 1000 concurrent connections (not completed; production impact)**: started from a fresh 128256 kB baseline. The SSH session was reset at ~200 connections; the whole machine then became unresponsive for ~40 minutes (SSH banner timeouts, no response on 8443) until the provider watchdog hard-reset the VM at 01:39. Root cause: a same-host generator (Python holding 1000 concurrent TLS connections itself needs several hundred MB) plus the server (extrapolating from S2, 1000 connections ≈ +660 MB) exceeded the 1.6 GB physical memory. **Production impact disclosure**: real user devices could not connect for ~40 minutes. Conclusion: P8 requires an off-host generator or a host with ≥4 GB RAM; extrapolating from S2, the server itself holding 1000 connections (+660 MB) is feasible on a 2 GB+ host.
 
-| # | Scenario | Steps | Sampling |
+**S6 slow-consumer isolation**: 32KB clips @ 50/s (1.6 MB/s). Baseline p95 17 ms (includes JIT noise); with B stalled, A's p95 held at 7.0–7.9 ms — fully isolated. B was silently aborted by the server at **~16 s** (observed: established count 3→2 with no disconnect log; the autotuned ~10 MB loopback kernel buffers absorbed the initial burst, after which the 16-message send queue filled and triggered the abort). Two findings:
+
+- **Silent abort**: the queue-full path calls `MarkClosed + Cts.Cancel` directly, and the subsequent `CancelConnection` returns early because `MarkClosed` is already set — no disconnect security event is produced, so aborted connections are invisible in the logs (recorded in spec §15).
+- **Abort delay**: the 16-message queue trigger point is amplified by kernel socket buffers (autotuned up to ~10 MB) and therefore depends on message size and rate; on loopback, "queue full = disconnect" behaves as "buffers full = disconnect".
+
+**S7 cold start**: the application start phase (journal `Started` → `Now listening`) was **2 seconds** across three restarts — on target but borderline. Additional finding: end-to-end `systemctl restart` took **35.6 seconds** (with real clients connected) — the old instance's stop phase took 34 seconds because `ShutdownAsync` awaits each connection's `CloseAsync` close-handshake with no timeout, so silent clients stall the whole shutdown; spec §7's "wait up to 2 seconds" only covers the drain after the handshakes complete. Recorded in spec §15.
+
+**S8 idle CPU**: two 60-second runs, 5 clock ticks each (100 ticks = 1 CPU-second) → 0.083% CPU. The fixed overhead of the heartbeat scanner (1 Hz), state flush (5 s cycle, no dirty data while idle), and user-file polling (30 s cycle) is negligible.
+
+### 4. Findings and Follow-ups
+
+| # | Finding | Impact | Recommendation |
 |---|---|---|---|
-| S1 | Base memory | Start service with no clients; read RSS after 60 s warmup | 3 runs, take median |
-| S2 | 100 idle connections | Open 100 WSS connections with valid hello; hold 5 minutes | RSS delta before/after |
-| S3 | 1KB broadcast latency | Same-user 2 connections: A sends 1KB clips; A records ACK round-trip, B records broadcast lag | Discard 50 warmup, ≥1000 samples at 20 ms interval |
-| S4 | 512KB broadcast latency | Same as S3 with 512KB payload | Discard 10 warmup, ≥200 samples at 100 ms interval |
-| S5 | 1000 concurrent connections | Open 1000 connections with hello; hold 10 minutes | Full RSS/CPU curve + disconnect count |
-| S6 | Slow-consumer isolation | A sends 4KB clip every 20 ms; B stops reading its socket for 10 s | A's p95 unaffected; B disconnected after queue fills (16 messages) |
-| S7 | Cold start | `systemctl restart`; measure from spawn to `/health` 200 | 3 runs, take median |
-| S8 | Idle CPU | No clients for 60 s; average `ps -o %cpu` | 3 runs, take median |
+| F1 | Shutdown close-handshake wait is unbounded (34 s measured) | Prolongs the stop window on restarts/upgrades | Add a timeout (e.g. 2 s) to `CloseConnectionAsync`'s `CloseAsync`, then abort; recorded in spec §15 |
+| F2 | Queue-full abort produces no disconnect log | Aborted connections are invisible in security logs | Emit a security event on the abort path; recorded in spec §15 |
+| F3 | P1/P2 memory targets are too tight | Targets unreachable | Revise to P1 < 150 MB and P2 < 100 MB (100 connections), or start a memory-optimization effort |
+| F4 | P8 untestable on a 1.6 GB same-host environment | 1000 concurrent connections unverifiable | Off-host load generator, or retest on a ≥4 GB host |
 
-Latency metric definitions:
-
-- **ACK round-trip (ack_rtt)**: timestamp before `send(clip)` on A, again when this connection's `clip_ack` arrives; the difference is the RTT;
-- **Broadcast lag (broadcast_lag)**: `t0` before A sends the clip, `t1` when B receives the `clip` frame with that id; `t1 - t0` is the one-way lag (same-host clocks, no skew problem; across hosts, calibrate clocks first or measure half the ACK round-trip instead).
-
-P3/P4 are judged on the p95 of `broadcast_lag`; `ack_rtt` is recorded alongside for reference.
-
-### 5. How to Run
-
-**Memory and CPU (existing tools suffice)**:
+### 5. Reproduction
 
 ```bash
-# RSS (bytes)
+# 1. Upload the probe
+scp tools/perf_probe.py root@HOST:/tmp/
+# 2. Create a temporary benchmark user (delete afterwards)
+/opt/textcascade-server/TextCascade.Server user add --username perftest --password-stdin \
+  --config /etc/textcascade/textcascade.toml < <(echo PASSWORD)
+# 3. Latency scenarios (temporarily raise [rate_limit]; restore afterwards)
+python3 /tmp/perf_probe.py --user perftest --password PASSWORD latency --size 1024 --count 1000 --interval 0.02
+python3 /tmp/perf_probe.py --user perftest --password PASSWORD latency --size 524288 --count 200 --interval 0.1
+# 4. Connection holds and RSS sampling
 grep VmRSS /proc/$(systemctl show -p MainPID --value textcascade-server)/status
-# systemd view of memory
-systemctl status textcascade-server --no-pager | grep Memory
-# 60-second average CPU
-ps -o %cpu= -p $(systemctl show -p MainPID --value textcascade-server)
-# Finer GC/thread-pool observation (optional)
-dotnet-counters monitor --process-id <pid> System.Runtime
+python3 /tmp/perf_probe.py --user perftest --password PASSWORD hold --count 100 --seconds 300
+# 5. Slow consumer
+python3 /tmp/perf_probe.py --user perftest --password PASSWORD slow --size 32768 --stall 45
+# 6. Cleanup
+/opt/textcascade-server/TextCascade.Server user delete --username perftest --config /etc/textcascade/textcascade.toml
 ```
 
-**Cold start**:
+Caution: do not run S5-style high-concurrency scenarios on a low-memory host shared with the service (see the S5 production-impact disclosure).
 
-```bash
-systemctl restart textcascade-server
-# Difference between the "Started" and "Now listening on" journal timestamps,
-# or poll /health with curl until it returns 200.
-```
+### 6. Known Limitations
 
-**Latency and concurrent load**: the dedicated benchmark project does not exist yet. Until then, pick one:
-
-1. A general-purpose WebSocket load tool (e.g. k6) driven with the S3/S5 parameters;
-2. A throwaway console script (C# `ClientWebSocket` or Python `websockets`): login → connect → hello → send clips on a timer → timestamp `clip_ack`;
-3. Implement the `TextCascade.Server.Benchmark` console project (the durable option; scenarios named S1–S8 per section 4).
-
-k6 sketch (the ACK round-trip part of S3; replace TOKEN/HOST; broadcast lag needs a second static receiver):
-
-```javascript
-import ws from 'k6/ws';
-import { Trend } from 'k6/metrics';
-
-const ackRtt = new Trend('ack_rtt_ms');
-
-export default function () {
-  ws.connect('wss://HOST:8443/api/v1/sync', { headers: { Authorization: 'Bearer TOKEN' } }, (socket) => {
-    socket.on('open', () => {
-      socket.send(JSON.stringify({ type: 'hello', clientId: 'k6-a', clientName: 'k6', lastServerVersion: 0, snapshot: null }));
-      socket.on('message', (raw) => {
-        if (raw.includes('welcome')) {
-          for (let i = 0; i < 1000; i++) {
-            const t0 = Date.now();
-            socket.send(JSON.stringify({ type: 'clip', id: 'c' + i, payload: 'x'.repeat(1024), encrypted: false, hash: 'h' + i }));
-          }
-        } else if (raw.includes('clip_ack')) {
-          ackRtt.add(Date.now() - Number(raw.match(/"id":"c(\d+)"/)[1]) * 20);
-        }
-      });
-    });
-  });
-}
-```
-
-Note: the sketch assumes one clip every 20 ms; a real script should pace sends with `setInterval` or batching. It illustrates the data-collection points only.
-
-### 6. Results Template
-
-| Scenario | Metric | Target | Measured | Environment | Date | Pass |
-|---|---|---|---|---|---|---|
-| S1 | RSS median | < 50 MB | TBD | TBD | TBD | ☐ |
-| S2 | ΔRSS | < 20 MB | TBD | TBD | TBD | ☐ |
-| S3 | broadcast_lag p95 | < 30 ms | TBD | TBD | TBD | ☐ |
-| S3 | ack_rtt p95 | reference | TBD | TBD | TBD | ☐ |
-| S4 | broadcast_lag p95 | < 250 ms | TBD | TBD | TBD | ☐ |
-| S5 | 10-minute stability | no disconnects | TBD | TBD | TBD | ☐ |
-| S6 | slow-consumer isolation | B dropped, A p95 within target | TBD | TBD | TBD | ☐ |
-| S7 | cold start median | < 2 s | TBD | TBD | TBD | ☐ |
-| S8 | idle CPU average | ≈ 0% | TBD | TBD | TBD | ☐ |
-
-Filling rules: the Environment column references the description from section 3; tick the Pass column when the target is met, and append a gap analysis at the end of this file when it is not (root cause + attribution: implementation / environment / the target itself).
-
-### 7. Known Limitations
-
-- The benchmark project is not implemented; interim tooling depends on generic clients or throwaway scripts, and sampling cadence accuracy is bounded by client timer resolution (~15 ms by default on Windows);
-- The P7 recovery window is a configuration constant whose 3-second semantics are already verified by integration tests; this document only confirms it from the deployment side;
-- Same-host loopback measurements exclude network jitter; cross-host results must not be compared directly against the loopback targets;
-- RuntimeStateStore flushing (5-second cycle) and UserFileWatcher polling (30-second cycle) are part of the idle overhead — expected behavior, not regressions.
+- The generator shares the host with the service; S5 is constrained by memory and CPU, and cross-host results are not directly comparable to these loopback numbers;
+- Sampling cadence is bounded by Python asyncio timer precision (far better on Linux than the 15 ms default on Windows);
+- Baseline RSS depends on GC policy and may drift across .NET versions;
+- The temporary rate_limit adjustment was used only for the latency/slow-consumer scenarios; S1/S2/S5/S7/S8 were measured under default configuration.
