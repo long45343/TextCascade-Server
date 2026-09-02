@@ -1,7 +1,7 @@
 # TextCascade 轻量文本同步服务端规格
 
-状态：已按实现对齐 v0.3.5（commit 9ed6eba）修订；测试与契约细节以 specs/test-and-contract-spec.md 为准  
-日期：2026-08-27（2026-08-18 定稿版漂移对齐，漂移溯源见 git 提交记录）  
+状态：与 v0.4.0 实现对齐；测试与契约细节以 specs/test-and-contract-spec.md 为准  
+日期：2026-09-02  
 协议目标：不兼容原 ClipCascade，只做轻量、可靠、高性能的文本最新值同步
 
 ## 1. 目标与非目标
@@ -25,10 +25,39 @@
 
 ## 2. 已定架构
 
+整体结构与数据流：
+
+```mermaid
+flowchart LR
+    C["客户端（桌面 / Android）"]
+    K["Kestrel（TLS 终结）"]
+    SE["SyncEndpoint：升级前验 token、子协议协商"]
+    RL["ReadLoopAsync（每连接）：收帧、解析、验证"]
+    subgraph HUB["UserHub（每在线用户一个）"]
+        CH["用户 Channel（无界）"]
+        UL["RunUserLoopAsync（单消费者）"]
+        LT["LatestText（不可变替换）"]
+    end
+    SL["ConnectionSendLoopAsync（每连接，有界发送队列）"]
+    RS[("RuntimeStateStore：版本落盘")]
+    FW["UserFileWatcher：users.json 热加载"]
+    HS["HeartbeatScannerService（1 Hz）"]
+    REG["UserRegistry"]
+    C -->|"WSS · textcascade.v1"| K --> SE --> RL
+    RL -->|"用户级 job"| CH
+    CH --> UL --> LT
+    UL -->|"单次序列化，除发送方外广播"| SL
+    SL --> C
+    REG --- HUB
+    FW -.->|"查找表原子替换"| REG
+    UL -.->|"脏位，5 秒周期刷盘"| RS
+    HS -.->|"ping 调度、hello 与心跳超时判定"| SE
+```
+
 ### 2.1 运行时与进程
 
 - 技术栈：ASP.NET Core Minimal API + Kestrel 原生 WebSocket。
-- 目标框架：`net10.0`；产品版本采用 SemVer，写入 `TextCascade.Server.csproj` 的 `Version`（当前 0.3.5）。
+- 目标框架：`net10.0`；产品版本采用 SemVer，写入 `TextCascade.Server.csproj` 的 `Version`（当前 0.4.0）。
 - 进程模型：单进程；生产环境由 systemd 或 Windows Service 托管并负责崩溃自动重启。
 - TLS：Kestrel 直接终止 TLS；不提供生产/开发模式开关，所有部署都禁止明文 HTTP 登录。TLS 协议版本跟随 OS 默认策略，未显式固定下限（见 8.2 与差距台账）。
 - 部署产物：框架依赖单文件；目标机必须预装对应 .NET Runtime。
@@ -108,7 +137,7 @@ state_file = "textcascade.state.json"
 - token secret 必须由环境变量提供，长度至少 32 字节；缺失或过短时启动失败。
 - TLS 始终启用；`certificate_path` 必须指向服务端可用证书。
 - 证书支持无密码格式：`.pem` / `.crt` 必须是包含叶证书与未加密私钥的 PEM bundle（允许同名 `.key` 边车文件承载私钥）；`.pfx` / `.p12` 必须可无密码加载。遇到需要密码的 PFX 时启动失败。
-- TOML 使用宽松解析：必须以 UTF-8 读取（非 UTF-8 字节 fail-fast）；未知键忽略并输出 warning；结构或类型非法 fail-fast。**重复键视为解析错误直接启动失败**（Tomlyn 语义，与早期"取后值并告警"的设计不同）。
+- TOML 使用宽松解析：必须以 UTF-8 读取（非 UTF-8 字节 fail-fast）；未知键忽略并输出 warning；结构或类型非法 fail-fast。**重复键视为解析错误直接启动失败**（Tomlyn 语义）。
 - `max_frame_bytes` 必须大于 `max_text_bytes`，差额留给 JSON 协议头。
 - 所有容量与时间配置必须大于 0，心跳超时必须大于心跳间隔。
 - 校验顺序：Load → EnvironmentOverrides → ValidateConfig。
@@ -177,7 +206,7 @@ TextCascade.Server serve                            # 启动服务（Program.cs 
 - 格式：`{"entries":[{"username":"alice","version":129}, ...]}`。
 - 写入时机：`PeriodicTimer` 每 5 秒对脏数据原子快照落盘；优雅停机时同步 flush；每次 clip 成功（`SaveVersion`）标记脏位。`SaveVersion` 采用单调 max 合并，防止乱序回退。
 - 启动行为：`GetOrCreateHub` 用 `GetVersion(username)` 作为 hub 初始版本；状态文件结构非法（重复键、空 username、零版本）fail-fast。
-- 该机制使重启后版本号跨重启单调增长，不再从 1 重新计数（完整语义见 6.2）。
+- 该机制使重启后版本号跨重启单调增长（完整语义见 6.2）。
 
 ## 4. HTTP API
 
@@ -290,6 +319,25 @@ GET /health     （亦响应 HEAD /health）
 
 ## 5. WebSocket 协议
 
+常态连接生命周期（升级前已完成 Bearer token 验证与子协议协商）：
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant S as 服务端
+    C->>S: hello（clientId、clientName、lastServerVersion、snapshot）
+    S->>C: welcome（protocolVersion、latest 可省略）
+    C->>S: clip（id、payload、encrypted、hash）
+    S->>S: 幂等检查 → 令牌桶 → 版本自增
+    S->>C: clip_ack（id、version）
+    S->>C: clip 广播（除发送方连接）
+    loop 每 heartbeat_interval_seconds（默认 30 秒）
+        S->>C: ping（serverTimeUtc）
+        C->>S: pong（clientTimeUtc）
+    end
+    S-->>C: bye（reason=server_shutdown）+ close 1001（停机场景）
+```
+
 ### 5.1 连接建立
 
 ```http
@@ -397,7 +445,7 @@ Upgrade: websocket
 
 实现：`Protocol.ValidateClipMessage` 单函数按结构→语义→资源顺序早拒绝；`CheckFrameSize` 帧硬限制；`CheckPayloadSize` 文本限额；`SeenIdRing.IsUnchangedDuplicate/TryGetResult/RememberId` 幂等；`TokenBucket.TryAcquire` 用户级令牌桶；`CoreLogic.NextVersion` ulong 自增（溢出抛出触发 RebuildHub）。
 
-幂等规则（v0.2.5 起语义细化）：
+幂等规则：
 
 - `id` 已见过 **且 payload/hash/encrypted 与上次完全一致**：不生成新版本、不消耗令牌桶，返回原版本 ACK；重复 ACK 仍进入发送方有界发送队列，队列满时按慢连接取消。
 - `id` 已见过但内容不同：记录 "Replacing reused clip id" warning 后**按全新消息处理**——消耗令牌桶、生成新版本并覆盖最新值。客户端不应复用已确认过的 id。
@@ -599,8 +647,6 @@ hub 清理：
 | clip | username, version, clipId, bytes, fromClientId, encrypted |
 | reject | username, code, bytes |
 
-（历史版本的 `durationMs` 字段与 `server_stop` 事件从未实现/已不存在，不再列为要求。）
-
 ### 8.2 传输与输入安全
 
 - 生产只允许 HTTPS/WSS：`ServerHost.RunServer` 强制先加载证书，Kestrel 仅绑定单一 HTTPS endpoint。TLS 协议版本跟随 OS 默认策略，代码未显式设置 SslProtocols 下限；NetworkIntegration 测试以显式 Tls12/Tls13 客户端握手验证兼容性。
@@ -612,11 +658,11 @@ hub 清理：
 
 ## 9. 性能目标
 
-原文的性能指标表（内存、广播 p95、冷启动等）在本轮修订中移出：项目此前从未建立度量设施。性能目标、测量场景与结果模板现由仓库根目录的 [perf.md](../perf.md)（中英双语）承载，作为构建基准设施的契约；未验证的目标不作为承诺。（协议层面保留的设计性质：广播单次 UTF-8 序列化、每连接有界发送队列、空闲路径只有心跳扫描与周期刷盘。）
+性能目标、测量场景与实测结果由仓库根目录的 [perf.md](../perf.md)（中英双语）承载，作为构建基准设施的契约；未验证的目标不作为承诺。（协议层面保留的设计性质：广播单次 UTF-8 序列化、每连接有界发送队列、空闲路径只有心跳扫描与周期刷盘。）
 
 ## 10. 测试计划
 
-详细到函数层面的规格见 [specs/test-and-contract-spec.md](test-and-contract-spec.md)，本节描述现状与分层。集成测试机制自 v0.3.0 起采用真实 Kestrel 绑定 `127.0.0.1:0` 的 fixture（`ServerHost.CreateApp` 构建 + FastPasswordHasher 注入），不再使用内存 socket 对。
+详细到函数层面的规格见 [specs/test-and-contract-spec.md](test-and-contract-spec.md)，本节描述现状与分层。集成测试机制自 v0.3.0 起采用真实 Kestrel 绑定 `127.0.0.1:0` 的 fixture（`ServerHost.CreateApp` 构建 + FastPasswordHasher 注入）。
 
 ### 10.1 纯单元测试（现有覆盖）
 
@@ -624,7 +670,7 @@ hub 清理：
 - CLI PID 单实例锁：活跃互斥、陈旧 PID 回收、存活进程不回收、锁路径校验。
 - `SlidingWindowLoginLimiter`：双维度、跨 IP、成功仅清用户窗口、max keys、过期清理。
 - `TryAcquireClipToken`（TokenBucket refill）、`CheckFrameSize`/`CheckPayloadSize`、SeenIdRing 去重与淘汰、`NextVersion` 含 ulong.MaxValue 抛出、`SelectSnapshotWinner` 三规则。
-- 待补齐缺口（Argon2 三函数、token 数字全形态、CLI 水位/溢出、WithVersion、重复 id 行为级断言）已定义于 test-and-contract-spec §3，落地前不构成本节的承诺范围。
+- Argon2 三函数（SlowHash）、token 数字全形态、CLI 水位/溢出、WithVersion、重复 id 行为级断言均已由测试覆盖（函数级规格见 test-and-contract-spec §3）。
 
 ### 10.2 CI 集成测试：真实 Kestrel loopback
 
@@ -643,8 +689,6 @@ CI 默认排除（ci.yml 过滤参数见 test-and-contract-spec 实施清单）�
 ### 10.4 契约测试
 
 样本文件组织于 Tests 项目 `ContractSamples/`（valid/invalid 分类、非法数字与非法 UTF-8 全矩阵、深度 4、重复/未知字段），由 Theory 驱动断言 `ParseClientMessage` 结果与序列化字节不变式；样本文件同时作为三端实现的公共对拍集合。明细见 test-and-contract-spec §2。
-
-（独立 Benchmark 项目与压测场景已从规格移除，理由见第 9 节。）
 
 ## 11. 客户端适配要求
 
@@ -686,24 +730,24 @@ CI 默认排除（ci.yml 过滤参数见 test-and-contract-spec 实施清单）�
 
 ### M4：生产化 —— 大体达成，两项移交差距台账
 
-Kestrel TLS、结构化日志与脱敏、登录与消息限流、框架依赖单文件发布、systemd/发布管线均已落地；Benchmark 项目与性能指标未实施且已从规格移除（见第 9 节）。
+Kestrel TLS、结构化日志与脱敏、登录与消息限流、框架依赖单文件发布、systemd/发布管线均已落地；性能基准由 perf.md 实测承载（见第 9 节）。
 
 ## 13. 版本与发布
 
-- 产品版本采用 SemVer 2.0.0，从 `0.1.0` 开始演进，以 `TextCascade.Server.csproj` 的 `Version` 为准（当前 0.3.5）。
+- 产品版本采用 SemVer 2.0.0，从 `0.1.0` 开始演进，以 `TextCascade.Server.csproj` 的 `Version` 为准（当前 0.4.0）。
 - `protocolVersion` 只表示线协议版本，当前为 `1`，与产品版本独立演进。
 - 目标框架为 `net10.0`；目标机必须预装兼容的 .NET 10 Runtime。
 - 发布命令：`dotnet publish TextCascade.Server.csproj -c Release -p:PublishSingleFile=true`（win-x64/linux-x64 框架依赖单文件）。
 - 本地编译命令：`dotnet build TextCascade.Server.csproj -c Release`。
 
-## 14. 决策台账（更新于 2026-08-27）
+## 14. 决策台账
 
 | 问题 | 结论 |
 |---|---|
 | 最大文本默认值 | 512KB |
 | 最新值文本本体磁盘持久化 | 不做，文本只在内存 |
 | 版本号持久化 | 做：v0.2.5 起 RuntimeStateStore 落盘 textcascade.state.json，版本跨重启单调 |
-| 用户配置热加载 | 做：v0.3.0 起 UserFileWatcher 监听 + 轮询兜底，新认证即刻生效（取代早期"重启生效"决策） |
+| 用户配置热加载 | 做：v0.3.0 起 UserFileWatcher 监听 + 轮询兜底，新认证即刻生效 |
 | token 生命周期 | 长期 token + tokenVersion 撤销 |
 | 删除后重建用户 | 全局 nextTokenVersion 水位 |
 | metrics | 不启用 endpoint |

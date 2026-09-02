@@ -47,6 +47,8 @@ TextCascade-Server/
 │   ├── Auth.cs / AuthService.cs   token 签发、校验、登录限流
 │   ├── Users.cs / Cli.cs          用户文件与 CLI(add/passwd/...)
 │   ├── RuntimeConfig.cs          TOML 配置与默认值、环境变量覆盖
+│   ├── RuntimeStateStore.cs      版本号落盘(textcascade.state.json)
+│   ├── SecurityLogging.cs        结构化安全日志与脱敏
 │   └── Core.cs                    限流、去重环形队列等基础工具
 ├── TextCascade.Server.Tests/      xUnit 测试
 ├── deploy/                        systemd unit、示例 TOML 与空 users.json
@@ -115,6 +117,7 @@ clip_tokens_per_second = 2
 
 [files]
 users_file = "users.json"
+state_file = "textcascade.state.json"
 ```
 
 关键规则:
@@ -159,7 +162,7 @@ GitHub Release 提供两种 Framework-dependent 单文件包,目标机需预装 
 
 包内附带主程序、配置模板;Linux 包另附 systemd unit。每次 Release 同时提供 SHA-256 校验文件。
 
-推送 `v*.*.*` 标签(如 `v0.3.0`)会自动执行测试、构建双平台单文件包、生成校验和并发布 GitHub Release。`main` 分支和 Pull Request 会自动执行 restore/build/test CI。
+推送 `v*.*.*` 标签(如 `v0.4.0`)会自动执行测试、构建双平台单文件包、生成校验和并发布 GitHub Release。`main` 分支和 Pull Request 会自动执行 restore/build/test CI。
 ### 生产部署(systemd)
 
 参考 `deploy/textcascade-server.service`:
@@ -170,7 +173,7 @@ GitHub Release 提供两种 Framework-dependent 单文件包,目标机需预装 
 
 ### 许可
 
-见仓库 LICENSE(如有)。
+见仓库 [LICENSE](LICENSE)(GPL-3.0)。
 
 ---
 
@@ -271,7 +274,6 @@ clip_tokens_per_second = 2
 [files]
 users_file = "users.json"
 state_file = "textcascade.state.json"
-state_file = "textcascade.state.json"
 ```
 
 Key rules:
@@ -316,7 +318,7 @@ GitHub Releases provides two framework-dependent single-file archives. The .NET 
 
 Each archive contains the executable and config template; the Linux archive also includes the systemd unit. Every Release includes a SHA-256 checksum file.
 
-Pushing a `v*.*.*` tag (for example `v0.3.0`) runs tests, builds both single-file archives, generates checksums, and publishes a GitHub Release. Pushes to `main` and pull requests run restore/build/test CI automatically.
+Pushing a `v*.*.*` tag (for example `v0.4.0`) runs tests, builds both single-file archives, generates checksums, and publishes a GitHub Release. Pushes to `main` and pull requests run restore/build/test CI automatically.
 ### Production (systemd)
 
 See `deploy/textcascade-server.service`:
@@ -327,7 +329,7 @@ See `deploy/textcascade-server.service`:
 
 ### License
 
-See the repository LICENSE if present.
+See [LICENSE](LICENSE) (GPL-3.0).
 
 ### Release & Maintenance Guidelines
 
