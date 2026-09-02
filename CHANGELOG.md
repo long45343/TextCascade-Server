@@ -87,7 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial import and baseline release of TextCascade Server with Minimal API, Kestrel WebSocket, Argon2 password hashing, and token authentication.
 
-[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/long45343/TextCascade-Server/compare/v0.3.5...v0.4.0
 [0.3.5]: https://github.com/long45343/TextCascade-Server/compare/v0.3.0...v0.3.5
 [0.3.0]: https://github.com/long45343/TextCascade-Server/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/long45343/TextCascade-Server/compare/v0.2.1...v0.2.5
