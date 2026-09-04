@@ -1,7 +1,7 @@
 # TextCascade 轻量文本同步服务端规格
 
-状态：与 v0.4.0 实现对齐；测试与契约细节以 specs/test-and-contract-spec.md 为准  
-日期：2026-09-02  
+状态：与 v0.5.0 实现对齐  
+日期：2026-09-05  
 协议目标：不兼容原 ClipCascade，只做轻量、可靠、高性能的文本最新值同步
 
 ## 1. 目标与非目标
@@ -57,7 +57,7 @@ flowchart LR
 ### 2.1 运行时与进程
 
 - 技术栈：ASP.NET Core Minimal API + Kestrel 原生 WebSocket。
-- 目标框架：`net10.0`；产品版本采用 SemVer，写入 `TextCascade.Server.csproj` 的 `Version`（当前 0.4.0）。
+- 目标框架：`net10.0`；产品版本采用 SemVer，写入 `TextCascade.Server.csproj` 的 `Version`（当前 0.5.0）。
 - 进程模型：单进程；生产环境由 systemd 或 Windows Service 托管并负责崩溃自动重启。
 - TLS：Kestrel 直接终止 TLS；不提供生产/开发模式开关，所有部署都禁止明文 HTTP 登录。TLS 协议版本跟随 OS 默认策略，未显式固定下限（见 8.2 与差距台账）。
 - 部署产物：框架依赖单文件；目标机必须预装对应 .NET Runtime。
@@ -137,6 +137,7 @@ state_file = "textcascade.state.json"
 - token secret 必须由环境变量提供，长度至少 32 字节；缺失或过短时启动失败。
 - TLS 始终启用；`certificate_path` 必须指向服务端可用证书。
 - 证书支持无密码格式：`.pem` / `.crt` 必须是包含叶证书与未加密私钥的 PEM bundle（允许同名 `.key` 边车文件承载私钥）；`.pfx` / `.p12` 必须可无密码加载。遇到需要密码的 PFX 时启动失败。
+- 私钥存储（v0.5.0 起）：PFX 在 Windows 上以 `DefaultKeySet` 持久化私钥加载（SChannel 无法用 ephemeral key 完成 TLS 握手），非 Windows 平台使用 `EphemeralKeySet`；PEM 在 Windows 上经 PFX 导出重导入以持久化私钥（CertificateLoader，ServerHost.cs）。
 - TOML 使用宽松解析：必须以 UTF-8 读取（非 UTF-8 字节 fail-fast）；未知键忽略并输出 warning；结构或类型非法 fail-fast。**重复键视为解析错误直接启动失败**（Tomlyn 语义）。
 - `max_frame_bytes` 必须大于 `max_text_bytes`，差额留给 JSON 协议头。
 - 所有容量与时间配置必须大于 0，心跳超时必须大于心跳间隔。
@@ -229,7 +230,7 @@ Content-Type: application/json
 实现要点：
 
 - `AuthService.HandleLoginAsync(HttpContext, config, syncServer, logger)`：薄入口，HTTP 处理内联其中。
-- 请求体限制 16KB、JSON 深度 3、拒绝未知字段与重复字段；畸形请求体（缺字段、类型错误、非法 JSON）返回规格内统一形态之外的 `400 invalid_request`。
+- 请求体限制 16KB、JSON 深度 3、拒绝未知字段与重复字段（v0.5.0 起：`ParseLoginRequest` 单次严格 `JsonSerializer.DeserializeAsync`，`MaxDepth=3`、`AllowDuplicateProperties=false`、`JsonUnmappedMemberHandling.Disallow`；16KB 上限经 `IHttpMaxRequestBodySizeFeature` 强制，chunked 请求体同样受限）；畸形请求体（缺字段、类型错误、非法 JSON）返回规格内统一形态之外的 `400 invalid_request`。
 - 认证使用常数时间比较；不存在的用户以缓存的 dummy hash 执行同等验证，消除用户名存在性的计时侧信道。
 - 限流命中返回 `429 Too Many Requests`，错误码 `rate_limited`；认证失败、用户不存在、用户禁用统一返回 `401 {"error":"invalid_credentials","message":"Invalid username or password."}`。
 
@@ -482,7 +483,7 @@ Upgrade: websocket
 
 实现：
 
-- 统一扫描器 `HeartbeatScannerService` 固定每 1 秒运行一次，集中处理 ping 调度（间隔默认 30 秒）、hello 超时与心跳超时判定（默认 60 秒无 pong 取消连接）；检测延迟 0–1 秒，不提供独立配置。
+- 统一扫描器 `HeartbeatScannerService`（`BackgroundService` 内 `PeriodicTimer` 驱动，扫描异常记入日志而非静默吞掉）固定每 1 秒运行一次，集中处理 ping 调度（间隔默认 30 秒）、hello 超时与心跳超时判定（默认 60 秒无 pong 取消连接）；检测延迟 0–1 秒，不提供独立配置。
 - pong 更新 lastSeen 经用户 Channel 由单消费者落账；用户循环被大 clip 占用时 pong 记账可能延迟数秒。
 - 收到没有未决 ping 的主动 pong，回复 `invalid_message` 错误帧但不断开连接（spec 外补充分支）。
 
@@ -662,7 +663,7 @@ hub 清理：
 
 ## 10. 测试计划
 
-详细到函数层面的规格见 [specs/test-and-contract-spec.md](test-and-contract-spec.md)，本节描述现状与分层。集成测试机制自 v0.3.0 起采用真实 Kestrel 绑定 `127.0.0.1:0` 的 fixture（`ServerHost.CreateApp` 构建 + FastPasswordHasher 注入）。
+本节自包含描述测试现状与分层，不依赖外部文件。集成测试机制自 v0.3.0 起采用真实 Kestrel 绑定 `127.0.0.1:0` 的 fixture（`ServerHost.CreateApp` 构建 + FastPasswordHasher 注入）。
 
 ### 10.1 纯单元测试（现有覆盖）
 
@@ -670,13 +671,14 @@ hub 清理：
 - CLI 单实例文件锁（`FileShare.None`）：活跃互斥、崩溃残留锁文件可复用、锁路径校验。
 - `SlidingWindowLoginLimiter`：双维度、跨 IP、成功仅清用户窗口、max keys、过期清理。
 - `TryAcquireClipToken`（TokenBucket refill）、`CheckFrameSize`/`CheckPayloadSize`、SeenIdRing 去重与淘汰、`NextVersion` 含 ulong.MaxValue 抛出、`SelectSnapshotWinner` 三规则。
-- Argon2 三函数（SlowHash）、token 数字全形态、CLI 水位/溢出、WithVersion、重复 id 行为级断言均已由测试覆盖（函数级规格见 test-and-contract-spec §3）。
+- Argon2 三函数（SlowHash）、token 数字全形态、CLI 水位/溢出、WithVersion、重复 id 行为级断言均已由测试覆盖。
+- 证书加载（CertificateLoaderTests）：PEM RSA/ECDSA 证书、合并 bundle 与独立 `.key` 边车、缺私钥与无证书内容的拒绝路径。
 
 ### 10.2 CI 集成测试：真实 Kestrel loopback
 
 现有 `WebSocketIntegrationTests` 覆盖：登录与握手往返（含 welcome）、无效 token 不升级、两客户端广播与发送方 ACK、重复 id 同版本 ACK、断连后按最高 lastServerVersion 快照恢复（结合版本持久化）、突兀断开被记录且服务存活（日志不含密码/secret）。
 
-计划中的补齐用例（子协议 400、hello 超时、NeedsRehash 不重写、同 clientId 排除规则、用户隔离、慢连接取消、bye/1001 等）同样收录于 test-and-contract-spec，实施后回填。
+计划中的补齐用例（子协议 400、hello 超时、NeedsRehash 不重写 users.json、同 clientId 排除规则、用户隔离、慢连接取消）尚未实施，落地后回填本节；bye/1001 停机链路已由 §10.3 网络集成测试覆盖。
 
 ### 10.3 本地网络测试：Category=NetworkIntegration
 
@@ -684,11 +686,11 @@ hub 清理：
 dotnet test TextCascade.Server.slnx --filter Category=NetworkIntegration
 ```
 
-CI 默认排除（ci.yml 过滤参数见 test-and-contract-spec 实施清单）。覆盖：自签证书 TLS/WSS、显式 Tls12/Tls13 握手、随机端口绑定、真实帧分片、超限帧 1009、重启两次 CreateApp 后 token 直连与快照恢复、停机 bye/1001、HTTPS 登录全链路。用例级明细见 test-and-contract-spec §1。
+CI 主测试任务以 `--filter "Category!=NetworkIntegration"` 排除该类别，由独立 CI 任务运行。覆盖：自签证书 TLS/WSS、显式 Tls12/Tls13 握手、随机端口绑定、真实帧分片、超限帧 1009、重启两次 CreateApp 后 token 直连与快照恢复、停机 bye/1001、HTTPS 登录全链路。
 
 ### 10.4 契约测试
 
-样本文件组织于 Tests 项目 `ContractSamples/`（valid/invalid 分类、非法数字与非法 UTF-8 全矩阵、深度 4、重复/未知字段），由 Theory 驱动断言 `ParseClientMessage` 结果与序列化字节不变式；样本文件同时作为三端实现的公共对拍集合。明细见 test-and-contract-spec §2。
+样本文件组织于 Tests 项目 `ContractSamples/`（valid/invalid 分类、非法数字与非法 UTF-8 全矩阵、深度 4、重复/未知字段），由 Theory 驱动断言 `ParseClientMessage` 结果与序列化字节不变式；样本文件同时作为三端实现的公共对拍集合。
 
 ## 11. 客户端适配要求
 
@@ -724,9 +726,9 @@ CI 默认排除（ci.yml 过滤参数见 test-and-contract-spec 实施清单）�
 
 用户 Channel 单消费者、有界发送队列与立即取消、幂等 id、服务端版本号与不可变最新值、应用层心跳、统一取消清理。
 
-### M3：恢复与真实网络 —— 大体达成，余项转入 §10.3
+### M3：恢复与真实网络 —— 已达成，补齐用例见 §10.2
 
-优雅停机 bye/1001、快照恢复窗口与预算/队列约束、tokenVersion 撤销、版本号持久化；真实 TCP/TLS 集成测试与多端收敛测试补齐中（specs/test-and-contract-spec §1）。
+优雅停机 bye/1001、快照恢复窗口与预算/队列约束、tokenVersion 撤销、版本号持久化；真实 TCP/TLS 集成测试已落地（§10.3），其余补齐用例见 §10.2。
 
 ### M4：生产化 —— 大体达成，两项移交差距台账
 
@@ -734,7 +736,7 @@ Kestrel TLS、结构化日志与脱敏、登录与消息限流、框架依赖单
 
 ## 13. 版本与发布
 
-- 产品版本采用 SemVer 2.0.0，从 `0.1.0` 开始演进，以 `TextCascade.Server.csproj` 的 `Version` 为准（当前 0.4.0）。
+- 产品版本采用 SemVer 2.0.0，从 `0.1.0` 开始演进，以 `TextCascade.Server.csproj` 的 `Version` 为准（当前 0.5.0）。
 - `protocolVersion` 只表示线协议版本，当前为 `1`，与产品版本独立演进。
 - 目标框架为 `net10.0`；目标机必须预装兼容的 .NET 10 Runtime。
 - 发布命令：`dotnet publish TextCascade.Server.csproj -c Release -p:PublishSingleFile=true`（win-x64/linux-x64 框架依赖单文件）。
@@ -764,7 +766,7 @@ Kestrel TLS、结构化日志与脱敏、登录与消息限流、框架依赖单
 4. TLS 协议下限未显式固定，依赖 OS 默认（§8.2）。
 5. `ServerHost.CreateApp(certificate:null)` 的明文测试缝隙（仅 InternalsVisibleTo 可达）。
 6. ApplyClip 中 duplicateId 且 Latest 为 null 的兜底分支不可达（死分支）。
-7. §10 中标注"待补齐/补齐中"的测试项以 specs/test-and-contract-spec.md 落地为准。
+7. §10 中标注"待补齐/补齐中"的测试项尚未实施，落地后回填本 spec。
 8. 优雅停机对每个连接的 `CloseAsync` close 握手等待无超时：有静默客户端在线时，停机阶段实测可达 34 秒（perf.md S7）；§7 的"等待最多 2 秒"仅覆盖握手完成后的 drain。
 9. 发送队列满的熔断路径（`MarkClosed` + `Cts.Cancel`）不产生 disconnect 安全事件：后续 `CancelConnection` 因 `MarkClosed` 已置位而提前返回，被熔断的连接在日志中不可见（perf.md S6）。
 
