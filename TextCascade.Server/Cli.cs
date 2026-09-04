@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
@@ -433,20 +432,17 @@ public static class SingleInstanceLock
         {
             try
             {
-                if (!File.Exists(lockPath))
+                // FileShare.None: the OS releases the handle when the holder process dies,
+                // so a leftover file (crash, power loss) is simply reopened and never blocks;
+                // the PID below is diagnostic only.
+                var stream = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                stream.SetLength(0);
+                using (var writer = new StreamWriter(stream, Encoding.UTF8, bufferSize: 32, leaveOpen: true))
                 {
-                    var stream = new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                    using (var writer = new StreamWriter(stream, Encoding.UTF8, bufferSize: 32, leaveOpen: true))
-                    {
-                        writer.Write(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
-                    }
-                    return new SingleInstanceLockHandle(lockPath, stream);
+                    writer.Write(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
                 }
 
-                if (TryRecoverStaleLock(lockPath, out var recovered))
-                {
-                    return recovered;
-                }
+                return new SingleInstanceLockHandle(lockPath, stream);
             }
             catch (IOException)
             {
@@ -456,59 +452,6 @@ public static class SingleInstanceLock
         }
 
         return null;
-    }
-
-    private static bool TryRecoverStaleLock(string lockPath, out SingleInstanceLockHandle? handle)
-    {
-        handle = null;
-        try
-        {
-            var text = File.ReadAllText(lockPath).Trim();
-            if (!int.TryParse(text, CultureInfo.InvariantCulture, out var pid))
-            {
-                return false;
-            }
-
-            if (IsProcessAlive(pid))
-            {
-                return false;
-            }
-
-            File.Delete(lockPath);
-            var stream = new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            using (var writer = new StreamWriter(stream, Encoding.UTF8, bufferSize: 32, leaveOpen: true))
-            {
-                writer.Write(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
-            }
-            handle = new SingleInstanceLockHandle(lockPath, stream);
-            return true;
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-    }
-
-    private static bool IsProcessAlive(int pid)
-    {
-        try
-        {
-            var process = Process.GetProcessById(pid);
-            _ = process.Handle;
-            return !process.HasExited;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (InvalidOperationException)
-        {
-            return false;
-        }
-        catch (System.ComponentModel.Win32Exception)
-        {
-            return true;
-        }
     }
 }
 

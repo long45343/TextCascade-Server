@@ -1,7 +1,7 @@
-using System.IO;
-using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 
 namespace TextCascade.Server;
 
@@ -12,14 +12,14 @@ public sealed class AuthService
         var limiter = syncServer.LoginLimiter;
         var clock = syncServer.Clock;
         var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        var now = clock.UtcNow;
+        var now = clock.GetUtcNow();
 
         LoginRequest? request;
         try
         {
             request = await ParseLoginRequest(context);
         }
-        catch (Exception exception) when (exception is LoginParseException or JsonException or DecoderFallbackException)
+        catch (Exception exception) when (exception is LoginParseException or JsonException)
         {
             await WriteError(context, 400, "invalid_request", exception.Message);
             return;
@@ -65,51 +65,39 @@ public sealed class AuthService
         await context.Response.BodyWriter.WriteAsync(bytes);
     }
 
+    private const int MaxLoginBodyBytes = 16384;
+
+    // Login contract (spec §4.1): unknown fields, duplicate fields and nesting beyond
+    // depth 3 are rejected; names are exact lowercase via JsonPropertyName on LoginRequest.
+    private static readonly JsonSerializerOptions StrictLoginOptions = new()
+    {
+        MaxDepth = 3,
+        AllowDuplicateProperties = false,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+    };
+
     private static async Task<LoginRequest> ParseLoginRequest(HttpContext context)
     {
-        if (context.Request.ContentLength is > 16384)
+        if (context.Request.ContentLength is > MaxLoginBodyBytes)
         {
             throw new LoginParseException("Request body too large.");
         }
 
-        using var body = new MemoryStream();
-        var buffer = new byte[4096];
-        while (true)
+        var bodySize = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (bodySize is not null
+            && (bodySize.MaxRequestBodySize is null || bodySize.MaxRequestBodySize > MaxLoginBodyBytes))
         {
-            var read = await context.Request.Body.ReadAsync(buffer.AsMemory(), context.RequestAborted);
-            if (read == 0) break;
-            if (body.Length + read > 16384)
-            {
-                throw new LoginParseException("Request body too large.");
-            }
-
-            body.Write(buffer, 0, read);
-        }
-
-        var text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetString(body.ToArray());
-
-        using var document = JsonDocument.Parse(text, new JsonDocumentOptions
-        {
-            AllowTrailingCommas = false,
-            CommentHandling = JsonCommentHandling.Disallow,
-            MaxDepth = 3,
-        });
-        if (document.RootElement.ValueKind != JsonValueKind.Object
-            || !HasUniqueProperties(document.RootElement, "username", "password"))
-        {
-            throw new LoginParseException("Invalid login request.");
+            bodySize.MaxRequestBodySize = MaxLoginBodyBytes;
         }
 
         LoginRequest? request;
         try
         {
-            request = JsonSerializer.Deserialize<LoginRequest>(text, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                AllowTrailingCommas = false,
-                ReadCommentHandling = JsonCommentHandling.Disallow,
-                MaxDepth = 3,
-            });
+            request = await JsonSerializer.DeserializeAsync<LoginRequest>(context.Request.Body, StrictLoginOptions, context.RequestAborted);
+        }
+        catch (BadHttpRequestException)
+        {
+            throw new LoginParseException("Request body too large.");
         }
         catch (JsonException)
         {
@@ -122,20 +110,6 @@ public sealed class AuthService
         }
 
         return request;
-    }
-
-    private static bool HasUniqueProperties(JsonElement element, params string[] known)
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var property in element.EnumerateObject())
-        {
-            if (!known.Contains(property.Name, StringComparer.Ordinal) || !seen.Add(property.Name))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static async Task WriteError(HttpContext context, int status, string code, string message)
@@ -151,6 +125,9 @@ public sealed class AuthService
     public static string CreateRateLimitResult() => "rate_limited";
 }
 
-public sealed record LoginRequest(string Username, string Password);
+// Exact lowercase member names: case variants must fail as unknown fields (spec §4.1).
+public sealed record LoginRequest(
+    [property: JsonPropertyName("username")] string Username,
+    [property: JsonPropertyName("password")] string Password);
 
 public sealed class LoginParseException(string message) : Exception(message);

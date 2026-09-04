@@ -5,23 +5,13 @@ using Microsoft.Extensions.Logging;
 
 namespace TextCascade.Server;
 
-public interface IClock
-{
-    DateTimeOffset UtcNow { get; }
-}
-
-public sealed class SystemClock : IClock
-{
-    public DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
-}
-
 public sealed class SyncServer : IConnectionCoordinator
 {
     private readonly UserRegistry registry = new();
     private readonly List<ConnectionContext> pendingHellos = new();
     private readonly object pendingGate = new();
     private readonly IPasswordHasher hasher;
-    private readonly IClock clock;
+    private readonly TimeProvider clock;
     private readonly RuntimeStateStore runtimeStateStore;
     private IReadOnlyDictionary<string, UserRecord> userLookup;
     private readonly string loginDummyHash;
@@ -29,7 +19,7 @@ public sealed class SyncServer : IConnectionCoordinator
     public UserRegistry Registry => registry;
     public IPasswordHasher Hasher => hasher;
     public SlidingWindowLoginLimiter LoginLimiter { get; } = new();
-    public IClock Clock => clock;
+    public TimeProvider Clock => clock;
     public ILogger<SyncServer> Logger { get; }
     public IReadOnlyDictionary<string, UserRecord> UserLookup => Volatile.Read(ref userLookup);
     public DateTimeOffset ProcessStartTime { get; }
@@ -42,7 +32,7 @@ public sealed class SyncServer : IConnectionCoordinator
         UsersFile users,
         RuntimeStateStore runtimeStateStore,
         IPasswordHasher hasher,
-        IClock clock,
+        TimeProvider clock,
         ILogger<SyncServer> logger)
     {
         Config = config;
@@ -51,7 +41,7 @@ public sealed class SyncServer : IConnectionCoordinator
         this.hasher = hasher;
         this.clock = clock;
         Logger = logger;
-        ProcessStartTime = clock.UtcNow;
+        ProcessStartTime = clock.GetUtcNow();
         loginDummyHash = hasher.Hash(
             "textcascade-login-timing-dummy",
             Cli.CreateArgon2Config(config));

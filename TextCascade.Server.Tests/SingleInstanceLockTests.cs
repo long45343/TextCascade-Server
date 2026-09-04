@@ -73,28 +73,6 @@ public class SingleInstanceLockTests
     }
 
     [Fact]
-    public void LiveProcessLockIsNotRecovered()
-    {
-        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempDir);
-        try
-        {
-            var lockPath = Path.Combine(tempDir, "users.json.lock");
-            var currentPid = Environment.ProcessId;
-            File.WriteAllText(lockPath, currentPid.ToString(CultureInfo.InvariantCulture), Encoding.UTF8);
-
-            using var handle = SingleInstanceLock.Acquire(lockPath, TimeSpan.FromMilliseconds(10));
-            Assert.Null(handle);
-            Assert.True(File.Exists(lockPath));
-            Assert.Equal(currentPid.ToString(CultureInfo.InvariantCulture), File.ReadAllText(lockPath).Trim());
-        }
-        finally
-        {
-            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-        }
-    }
-
-    [Fact]
     public void AcquireRejectsPathWithoutDirectory()
     {
         Assert.Throws<ArgumentException>(() => SingleInstanceLock.Acquire("users.json.lock"));

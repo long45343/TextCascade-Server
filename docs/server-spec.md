@@ -198,7 +198,7 @@ TextCascade.Server user hash
 TextCascade.Server serve                            # 启动服务（Program.cs 动词分发）
 ```
 
-所有命令接受 `--config <path>`；CLI 写入 `users.json` 前先持有 PID 单实例锁（锁文件为 users.json 同目录 `users.json.lock`），再使用临时文件加原子替换。PID 锁识别并回收陈旧 PID、进程已退出但锁文件残留的情况，Windows 与 Linux 行为一致；检测到仍存活的其它 CLI 实例时失败退出。服务运行中修改文件的即时生效性见 3.2 热加载。
+所有命令接受 `--config <path>`；CLI 写入 `users.json` 前先持有单实例文件锁（锁文件为 users.json 同目录 `users.json.lock`，以 `FileShare.None` 独占打开，持有进程退出或崩溃时由 OS 自动释放），再使用临时文件加原子替换。崩溃残留的锁文件会被直接复用、不再阻塞；锁文件中的 PID 仅作诊断用途，不参与锁判定。Windows 与 Linux 行为一致；检测到其它 CLI 实例仍持有锁时重试后失败退出。服务运行中修改文件的即时生效性见 3.2 热加载。
 
 ### 3.4 RuntimeStateStore（版本号落盘）
 
@@ -667,7 +667,7 @@ hub 清理：
 ### 10.1 纯单元测试（现有覆盖）
 
 - `SignToken`/`TryVerifyToken`：往返、过期、tokenVersion 撤销、篡改、未知字段、禁用用户、用户缺失。
-- CLI PID 单实例锁：活跃互斥、陈旧 PID 回收、存活进程不回收、锁路径校验。
+- CLI 单实例文件锁（`FileShare.None`）：活跃互斥、崩溃残留锁文件可复用、锁路径校验。
 - `SlidingWindowLoginLimiter`：双维度、跨 IP、成功仅清用户窗口、max keys、过期清理。
 - `TryAcquireClipToken`（TokenBucket refill）、`CheckFrameSize`/`CheckPayloadSize`、SeenIdRing 去重与淘汰、`NextVersion` 含 ulong.MaxValue 抛出、`SelectSnapshotWinner` 三规则。
 - Argon2 三函数（SlowHash）、token 数字全形态、CLI 水位/溢出、WithVersion、重复 id 行为级断言均已由测试覆盖（函数级规格见 test-and-contract-spec §3）。

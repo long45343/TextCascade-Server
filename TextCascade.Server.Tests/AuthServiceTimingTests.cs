@@ -80,7 +80,7 @@ public class AuthServiceTimingTests
         try
         {
             var stateStore = new RuntimeStateStore(tempState);
-            var server = new SyncServer(config, users, stateStore, hasher, new SystemClock(), Microsoft.Extensions.Logging.Abstractions.NullLogger<SyncServer>.Instance);
+            var server = new SyncServer(config, users, stateStore, hasher, TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<SyncServer>.Instance);
 
             Assert.Equal(server.LoginDummyHash, hasher.DummyHashReturn);
 
@@ -121,7 +121,7 @@ public class AuthServiceTimingTests
         try
         {
             var stateStore = new RuntimeStateStore(tempState);
-            var server = new SyncServer(config, users, stateStore, hasher, new SystemClock(), Microsoft.Extensions.Logging.Abstractions.NullLogger<SyncServer>.Instance);
+            var server = new SyncServer(config, users, stateStore, hasher, TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<SyncServer>.Instance);
 
             Assert.Single(hasher.HashCalls);
             var call = hasher.HashCalls[0];
@@ -152,7 +152,7 @@ public class AuthServiceTimingTests
         try
         {
             var stateStore = new RuntimeStateStore(tempState);
-            var server = new SyncServer(config, users, stateStore, hasher, new SystemClock(), Microsoft.Extensions.Logging.Abstractions.NullLogger<SyncServer>.Instance);
+            var server = new SyncServer(config, users, stateStore, hasher, TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<SyncServer>.Instance);
 
             var (context, responseBody) = CreateHttpContext("dave", "correct-password");
             await AuthService.HandleLoginAsync(context, config, server, logger);

@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-09-04
+
+### Changed
+- Replaced hand-rolled helpers with standard library equivalents, with no behavior change: `TokenService` base64url codec now uses `System.Buffers.Text.Base64Url` (.NET 9 BCL) instead of a custom encode/decode pair; the `IClock`/`SystemClock` seam was replaced by `System.TimeProvider` (registered in DI, tests pass `TimeProvider.System`); `HeartbeatScannerService` was rewritten from a `System.Threading.Timer` callback to `PeriodicTimer` inside `BackgroundService` (scan exceptions are now logged instead of being unobserved).
+- Login request parsing (`AuthService.ParseLoginRequest`) now performs a single strict `JsonSerializer.DeserializeAsync` pass with .NET 10 `AllowDuplicateProperties = false` and `JsonUnmappedMemberHandling.Disallow`, replacing the manual 4 KB chunked read loop plus a double `JsonDocument`/`JsonSerializer` parse; the 16 KB cap is enforced via `IHttpMaxRequestBodySizeFeature` (chunked bodies included). Structural violations previously reported as "Invalid login request." now return "Invalid JSON." — status 400 and the `invalid_request` code are unchanged.
+- `SingleInstanceLock` no longer probes or recovers PIDs: the lock file (`users.json.lock`) is opened with `FileMode.OpenOrCreate` + `FileShare.None`, so the OS releases it when the holder process dies and a leftover file from a crash is simply reopened instead of blocking. The PID written into the file is diagnostic only. Contention behavior (3 retries, then graceful failure) is unchanged.
 
 ### Fixed
 - TLS server authentication failed on Windows with "platform does not support ephemeral keys" (0x8009030E): `CertificateLoader` now loads PFX certificates with a persisted key set (`DefaultKeySet`) on Windows (Linux keeps `EphemeralKeySet`), and PEM-loaded certificates are re-exported to a persisted key on Windows. Spec §2.1's Windows Service hosting shape required this to be usable. Found while benchmarking 1000 concurrent connections on a local Windows deployment.

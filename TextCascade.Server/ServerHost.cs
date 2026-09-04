@@ -71,7 +71,7 @@ public static class ServerHost
         UsersFile users,
         RuntimeStateStore stateStore,
         IPasswordHasher? hasher = null,
-        IClock? clock = null,
+        TimeProvider? clock = null,
         LoadedCertificate? certificate = null)
     {
         var builder = WebApplication.CreateBuilder(args);
@@ -88,14 +88,14 @@ public static class ServerHost
         });
 
         builder.Services.AddSingleton<IPasswordHasher>(hasher ?? new Argon2PasswordHasher());
-        builder.Services.AddSingleton<IClock>(clock ?? new SystemClock());
+        builder.Services.AddSingleton<TimeProvider>(clock ?? TimeProvider.System);
         builder.Services.AddSingleton(stateStore);
         builder.Services.AddSingleton(serviceProvider => new SyncServer(
             config,
             users,
             serviceProvider.GetRequiredService<RuntimeStateStore>(),
             serviceProvider.GetRequiredService<IPasswordHasher>(),
-            serviceProvider.GetRequiredService<IClock>(),
+            serviceProvider.GetRequiredService<TimeProvider>(),
             serviceProvider.GetRequiredService<ILogger<SyncServer>>()));
         builder.Services.AddHostedService<HeartbeatScannerService>();
         var app = builder.Build();
