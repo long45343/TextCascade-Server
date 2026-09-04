@@ -3,31 +3,15 @@
 .zcode/
 .trae/
 
-## .NET 构建产物
-[Bb]in/
-[Oo]bj/
-[Dd]ebug/
-[Rr]elease/
-*.dll
-*.exe
-*.pdb
-*.cache
-*.runtimeconfig.json
-*.deps.json
-*.staticwebassets.endpoints.json
+## Go 构建产物
+TextCascade.Server
+TextCascade.Server.exe
+*.test
+*.out
+vendor/
 
 ## 发布产物
 publish/
-
-## NuGet
-*.nupkg
-*.snupkg
-.nuget/
-project.assets.json
-project.nuget.cache
-*.nuget.dgspec.json
-*.nuget.g.props
-*.nuget.g.targets
 
 ## IDE 与编辑器
 .vs/
@@ -45,7 +29,6 @@ users.json
 *.crt
 *.key
 textcascade.env
-appsettings.*.local.json
 
 ## 操作系统残留
 Thumbs.db

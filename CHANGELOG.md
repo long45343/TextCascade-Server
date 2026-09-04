@@ -1,9 +1,24 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Changed
+- Full server rewrite in Go (branch `go`), a function-level 1:1 port of the C# v0.5.0 implementation with a zero-change external contract: wire protocol and byte-exact serialization, close codes, error codes, TOML keys, environment variables, CLI behavior and defaults are identical. The branch contains no C# code; the C# implementation remains on `main`.
+- Stack mapping (decisions Q1–Q15 in `docs/go-server-spec.md`): `gorilla/websocket` for WebSocket, `pelletier/go-toml/v2` for TOML, `gofrs/flock` for the CLI single-instance lock, `fsnotify` + 250 ms debounce + 30 s poll fallback for `users.json` watching, `golang.org/x/crypto/argon2` for Argon2id, `golang.org/x/term` for interactive passwords, `software.sslmate.com/src/go-pkcs12` for password-less PFX/P12, `log/slog` with a custom single-line handler for logging.
+- Inbound JSON is validated by a hand-written token-level pre-scanner (`internal/protocol/jsonscan.go`): strict UTF-8, nesting depth, integer-only number literals, and escape/control-character rules; semantic layers replicate the C# unknown/duplicate-field checks in document order.
+- Graceful shutdown keeps the C# behavior 1:1: bye → 1001 → 2 s drain → cancel all connections → synchronous flush, including the documented no-timeout close-handshake wait.
+
+### Breaking
+- Argon2 password hashes are self-consistent with the Go implementation and cannot verify hashes created by the C# build (decision Q6). When switching a deployment over, reset every user's password via `user passwd` (runbook in `docs/go-server-spec.md` §11). Token auth, `tokenVersion` revocation, and file formats are unchanged; TLS ALPN now advertises `http/1.1` only.
+
+### Added
+- Test suite ported 1:1 from xUnit: unit tests, the full contract-sample matrix (`testdata/contract-samples/`, byte-identical to the C# suite), WebSocket integration tests over plaintext HTTP, and 12 real-TLS network integration cases, plus slow-hash smoke tests with production Argon2 parameters.
+- CI (`ci.yml`) and release (`release.yml`) workflows rewritten for Go: gofmt/vet/test with race detection, contract-sample checksum verification, and a linux-x64/win-x64 static-binary release matrix with `-X main.version` injection.
 
 ## [0.5.0] - 2026-09-04
 

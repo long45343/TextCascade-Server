@@ -2,44 +2,47 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, go]
   pull_request:
-    branches: [main]
+    branches: [main, go]
   workflow_dispatch:
 
 jobs:
   build-test:
-    name: Build and test
+    name: Build, vet and test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          dotnet-version: 10.0.x
-          dotnet-quality: ga
+          go-version: '1.27'
+          cache: true
 
-      - name: Restore
-        run: dotnet restore TextCascade.Server.slnx
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: gofmt check
+        run: |
+          test -z "$(gofmt -l . )" || (gofmt -l . && exit 1)
+
+      - name: go vet
+        run: go vet ./...
 
       - name: Build
-        run: dotnet build TextCascade.Server.slnx --configuration Release --no-restore
+        run: go build -trimpath -o TextCascade.Server ./cmd/server
 
-      - name: Test
-        run: >
-          dotnet test TextCascade.Server.slnx --configuration Release --no-build
-          --filter "Category!=NetworkIntegration"
-          --logger trx --results-directory ./TestResults
+      - name: Contract samples sha256
+        run: |
+          find testdata/contract-samples -type f | sort | xargs sha256sum > contract-samples.sha256
+          sha256sum -c contract-samples.sha256
 
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: ./TestResults
-          if-no-files-found: warn
+      - name: Test (unit + contract, race)
+        run: go test ./... -race -timeout 600s -v
 
   network-tests:
     name: Network integration tests
@@ -48,17 +51,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          dotnet-version: 10.0.x
-          dotnet-quality: ga
+          go-version: '1.27'
+          cache: true
 
-      - name: Restore
-        run: dotnet restore TextCascade.Server.slnx
-
-      - name: Build
-        run: dotnet build TextCascade.Server.slnx --configuration Release --no-restore
-
-      - name: Test
-        run: dotnet test TextCascade.Server.slnx --configuration Release --no-build --filter "Category=NetworkIntegration"
+      - name: Test (network integration, race)
+        run: go test ./internal/hosting/ -race -timeout 600s -v

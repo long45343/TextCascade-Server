@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="TextCascade.Server.Tests/TextCascade.Server.Tests.csproj" />
-  <Project Path="TextCascade.Server/TextCascade.Server.csproj" />
-</Solution>
