@@ -1,3 +1,4 @@
+using System.Buffers.Text;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -136,9 +137,9 @@ public sealed class TokenService
         }
 
         var payloadBytes = stream.ToArray();
-        var payloadSegment = Base64UrlEncode(payloadBytes);
+        var payloadSegment = Base64Url.EncodeToString(payloadBytes);
         var signature = HMACSHA256.HashData(secret, payloadBytes);
-        return $"{payloadSegment}.{Base64UrlEncode(signature)}";
+        return $"{payloadSegment}.{Base64Url.EncodeToString(signature)}";
     }
 
     public bool VerifyToken(string compactToken, DateTimeOffset nowUtc, IReadOnlyDictionary<string, UserRecord> userLookup)
@@ -265,46 +266,22 @@ public sealed class TokenService
         return long.TryParse(span, NumberStyles.None, CultureInfo.InvariantCulture, out value) && value > 0;
     }
 
-    private static string Base64UrlEncode(byte[] bytes)
-    {
-        return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-    }
-
-    private static bool TryBase64UrlDecode(string text, ref byte[]? rented, Span<byte> buffer, out int length)
+    private static bool TryBase64UrlDecode(ReadOnlySpan<char> text, ref byte[]? rented, Span<byte> buffer, out int length)
     {
         rented = null;
-        if (string.IsNullOrEmpty(text) || text.Length % 4 == 1)
+        if (text.IsEmpty || text.Length % 4 == 1)
         {
             length = 0;
             return false;
         }
 
-        foreach (var character in text)
+        var maxDecodedLength = Base64Url.GetMaxDecodedLength(text.Length);
+        if (maxDecodedLength > buffer.Length)
         {
-            if (!char.IsAsciiLetterOrDigit(character) && character is not ('-' or '_'))
-            {
-                length = 0;
-                return false;
-            }
-        }
-
-        var paddedLength = text.Length + (4 - text.Length % 4) % 4;
-        if (paddedLength > buffer.Length)
-        {
-            rented = new byte[paddedLength];
+            rented = new byte[maxDecodedLength];
             buffer = rented;
         }
 
-        var chars = new char[paddedLength];
-        for (var i = 0; i < text.Length; i++)
-        {
-            chars[i] = text[i] switch { '-' => '+', '_' => '/', _ => text[i] };
-        }
-
-        for (var i = text.Length; i < paddedLength; i++)
-        {
-            chars[i] = '=';
-        }
-        return Convert.TryFromBase64Chars(chars, buffer, out length) && length > 0;
+        return Base64Url.TryDecodeFromChars(text, buffer, out length) && length > 0;
     }
 }

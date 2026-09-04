@@ -44,7 +44,7 @@ public class UserFileWatcherTests
                 initialUsers,
                 new RuntimeStateStore(tempState),
                 new Argon2PasswordHasher(),
-                new SystemClock(),
+                TimeProvider.System,
                 NullLogger<SyncServer>.Instance);
 
             using var watcher = new UserFileWatcher(
@@ -106,7 +106,7 @@ public class UserFileWatcherTests
                 initialUsers,
                 new RuntimeStateStore(tempState),
                 new Argon2PasswordHasher(),
-                new SystemClock(),
+                TimeProvider.System,
                 NullLogger<SyncServer>.Instance);
 
             using var watcher = new UserFileWatcher(
@@ -169,7 +169,7 @@ public class UserFileWatcherTests
                 usersA,
                 new RuntimeStateStore(tempState),
                 new Argon2PasswordHasher(),
-                new SystemClock(),
+                TimeProvider.System,
                 NullLogger<SyncServer>.Instance);
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
@@ -224,7 +224,7 @@ public class UserFileWatcherTests
                 initialUsers,
                 new RuntimeStateStore(tempState),
                 new Argon2PasswordHasher(),
-                new SystemClock(),
+                TimeProvider.System,
                 NullLogger<SyncServer>.Instance);
 
             var watcher = new UserFileWatcher(tempUsers, server, NullLogger.Instance);

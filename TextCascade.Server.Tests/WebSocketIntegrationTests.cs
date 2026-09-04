@@ -102,7 +102,7 @@ public class WebSocketIntegrationTests
                 users,
                 stateStore,
                 hasher: new FastPasswordHasher(),
-                clock: new SystemClock(),
+                clock: TimeProvider.System,
                 certificate: null);
 
             var logs = new TestLogCollector();

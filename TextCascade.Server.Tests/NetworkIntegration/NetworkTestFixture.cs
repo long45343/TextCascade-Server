@@ -85,7 +85,7 @@ public sealed class NetworkTestFixture : IAsyncDisposable
             Users,
             new RuntimeStateStore(StatePath),
             hasher: new FastPasswordHasher(),
-            clock: new SystemClock(),
+            clock: TimeProvider.System,
             certificate: new LoadedCertificate(
                 new X509Certificate2(PfxPath),
                 new X509Certificate2Collection(new X509Certificate2(PfxPath))));

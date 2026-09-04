@@ -1,27 +1,51 @@
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace TextCascade.Server;
 
-public sealed class HeartbeatScannerService : IHostedService, IDisposable
+public sealed class HeartbeatScannerService : BackgroundService
 {
-    private Timer? timer;
-
     private readonly SyncServer syncServer;
+    private readonly TimeProvider timeProvider;
+    private readonly ILogger<HeartbeatScannerService> logger;
 
-    public HeartbeatScannerService(SyncServer syncServer)
+    public HeartbeatScannerService(SyncServer syncServer, TimeProvider timeProvider, ILogger<HeartbeatScannerService> logger)
     {
         this.syncServer = syncServer;
+        this.timeProvider = timeProvider;
+        this.logger = logger;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        timer = new Timer(Scan, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
-        return Task.CompletedTask;
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(stoppingToken))
+            {
+                try
+                {
+                    Scan(timeProvider.GetUtcNow());
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(exception, "Heartbeat scan failed.");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
-    private void Scan(object? state)
+    public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        var now = DateTimeOffset.UtcNow;
+        await base.StopAsync(cancellationToken);
+        await syncServer.ShutdownAsync(TimeSpan.FromSeconds(2), timeProvider.GetUtcNow());
+    }
+
+    private void Scan(DateTimeOffset now)
+    {
         syncServer.ScanHeartbeats(now);
 
         var recoveryEnd = syncServer.ProcessStartTime.AddSeconds(
@@ -35,16 +59,5 @@ public sealed class HeartbeatScannerService : IHostedService, IDisposable
         {
             pair.Value.CloseRecoveryWindow(now);
         }
-    }
-
-    public async Task StopAsync(CancellationToken cancellationToken)
-    {
-        timer?.Change(Timeout.Infinite, 0);
-        await syncServer.ShutdownAsync(TimeSpan.FromSeconds(2), DateTimeOffset.UtcNow);
-    }
-
-    public void Dispose()
-    {
-        timer?.Dispose();
     }
 }

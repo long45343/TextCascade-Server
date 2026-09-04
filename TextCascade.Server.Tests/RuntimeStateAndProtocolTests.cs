@@ -152,7 +152,7 @@ public class RuntimeStateAndProtocolTests
                 new UsersFile(),
                 stateStore,
                 new Argon2PasswordHasher(),
-                new SystemClock(),
+                TimeProvider.System,
                 NullLogger<SyncServer>.Instance);
             var hub = new UserHub("alice", config, TestStartTime, server, server.RuntimeStateStore, 7UL);
             var modified = DateTimeOffset.FromUnixTimeSeconds(1759999990);
@@ -193,7 +193,7 @@ public class RuntimeStateAndProtocolTests
                 new UsersFile(),
                 stateStore,
                 new Argon2PasswordHasher(),
-                new SystemClock(),
+                TimeProvider.System,
                 NullLogger<SyncServer>.Instance);
             var hub = new UserHub("alice", config, TestStartTime, server, server.RuntimeStateStore, 7UL);
             hub.AcceptSnapshot(new ClientHello(
