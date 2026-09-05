@@ -20,11 +20,12 @@ jobs:
               print("UDP 3478: STUN RESPONSE OK,", len(data), "bytes")
           except socket.timeout:
               print("UDP 3478: TIMEOUT")
-          try:
-              s2 = socket.create_connection(("8.138.188.141", 3478), timeout=6)
-              s2.sendall(msg)
-              print("TCP 3478: connected, response:", len(s2.recv(2048)), "bytes")
-              s2.close()
-          except Exception as e:
-              print("TCP 3478: FAIL", type(e).__name__)
+          for port in (3478, 8443):
+              try:
+                  s2 = socket.create_connection(("8.138.188.141", port), timeout=6)
+                  s2.sendall(msg)
+                  print(f"TCP {port}: connected, response:", len(s2.recv(2048)), "bytes")
+                  s2.close()
+              except Exception as e:
+                  print(f"TCP {port}: FAIL", type(e).__name__)
           PYEOF
