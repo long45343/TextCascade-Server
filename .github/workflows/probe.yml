@@ -1,0 +1,30 @@
+name: Port probe (temporary, delete after use)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: UDP + TCP STUN probe
+        run: |
+          python3 - <<'PYEOF'
+          import socket, os, struct
+          tid = os.urandom(12)
+          msg = struct.pack(">HHI", 0x0001, 0, 0x2112A444) + tid
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(6)
+          s.sendto(msg, ("8.138.188.141", 3478))
+          try:
+              data, _ = s.recvfrom(2048)
+              print("UDP 3478: STUN RESPONSE OK,", len(data), "bytes")
+          except socket.timeout:
+              print("UDP 3478: TIMEOUT")
+          try:
+              s2 = socket.create_connection(("8.138.188.141", 3478), timeout=6)
+              s2.sendall(msg)
+              print("TCP 3478: connected, response:", len(s2.recv(2048)), "bytes")
+              s2.close()
+          except Exception as e:
+              print("TCP 3478: FAIL", type(e).__name__)
+          PYEOF
