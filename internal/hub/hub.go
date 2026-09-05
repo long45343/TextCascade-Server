@@ -94,18 +94,19 @@ type Hub struct {
 
 // New 对应 C# UserHub 构造。
 func New(username string, cfg *config.RuntimeConfig, processStart time.Time, coord Coordinator, store *state.Store, initialVersion uint64) *Hub {
-	return &Hub{
-		username:       username,
-		cfg:            cfg,
-		processStart:   processStart,
-		coordinator:    coord,
-		store:          store,
-		version:        initialVersion,
-		clipBucket:     core.NewBucket(cfg.RateLimit.ClipBurst, float64(cfg.RateLimit.ClipTokensPerSecond), processStart),
-		seenIDs:        core.NewRing(cfg.Limits.SeenIdCapacity),
-		jobs:           newJobQueue(),
-		lastActivityNs: func() atomic.Int64 { var v atomic.Int64; v.Store(processStart.UnixNano()); return v }(),
+	h := &Hub{
+		username:     username,
+		cfg:          cfg,
+		processStart: processStart,
+		coordinator:  coord,
+		store:        store,
+		version:      initialVersion,
+		clipBucket:   core.NewBucket(cfg.RateLimit.ClipBurst, float64(cfg.RateLimit.ClipTokensPerSecond), processStart),
+		seenIDs:      core.NewRing(cfg.Limits.SeenIdCapacity),
+		jobs:         newJobQueue(),
 	}
+	h.lastActivityNs.Store(processStart.UnixNano())
+	return h
 }
 
 // Username 用户名。
