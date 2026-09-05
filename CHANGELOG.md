@@ -5,19 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0-Alpha] - 2026-09-05
 
 ### Changed
 - Full server rewrite in Go (branch `go`), a function-level 1:1 port of the C# v0.5.0 implementation with a zero-change external contract: wire protocol and byte-exact serialization, close codes, error codes, TOML keys, environment variables, CLI behavior and defaults are identical. The branch contains no C# code; the C# implementation remains on `main`.
 - Stack mapping (decisions Q1–Q15 in `docs/go-server-spec.md`): `gorilla/websocket` for WebSocket, `pelletier/go-toml/v2` for TOML, `gofrs/flock` for the CLI single-instance lock, `fsnotify` + 250 ms debounce + 30 s poll fallback for `users.json` watching, `golang.org/x/crypto/argon2` for Argon2id, `golang.org/x/term` for interactive passwords, `software.sslmate.com/src/go-pkcs12` for password-less PFX/P12, `log/slog` with a custom single-line handler for logging.
 - Inbound JSON is validated by a hand-written token-level pre-scanner (`internal/protocol/jsonscan.go`): strict UTF-8, nesting depth, integer-only number literals, and escape/control-character rules; semantic layers replicate the C# unknown/duplicate-field checks in document order.
 - Graceful shutdown keeps the C# behavior 1:1: bye → 1001 → 2 s drain → cancel all connections → synchronous flush, including the documented no-timeout close-handshake wait.
+- Deployed to production  and switched over from the C# build after a parallel-instance verification; real clients migrate transparently with existing tokens and passwords.
+- Performance re-measured per the perf.md scenarios (`perf.md`, 2026-09-05): every target now passes at its original threshold — steady-state RSS 11.7 MB (previously 125–131 MB), marginal per-connection cost 83 KB (previously ≈ 240 KB), 1 KB broadcast p95 2.11 ms (previously 3.5 ms), 512 KB p95 90.6 ms (previously 103.2 ms); 1000 concurrent connections pass with a cross-machine load generator (same-host generators are infeasible on the 1.6 GB / 2 vCPU VPS for both runtimes).
+- The slow-consumer (S6) scenario documentation was removed from perf.md; the probe retains the capability for future cross-machine runs.
 
-### Breaking
-- Argon2 password hashes are self-consistent with the Go implementation and cannot verify hashes created by the C# build (decision Q6). When switching a deployment over, reset every user's password via `user passwd` (runbook in `docs/go-server-spec.md` §11). Token auth, `tokenVersion` revocation, and file formats are unchanged; TLS ALPN now advertises `http/1.1` only.
+### Fixed
+- Argon2 password hashes created by the C# build verify directly against the Go build: Argon2id is a standardized algorithm and Isopoh's output is byte-identical to `x/crypto` for the same (password, salt, m, t, p) — Isopoh's only quirk is choosing its own lane count and recording it honestly in the PHC string (verified bidirectionally on the development machine and in production, with pinned interop contract tests in `internal/auth`). Existing users migrate without password resets; tokens issued by the C# build remain valid.
 
 ### Added
-- Test suite ported 1:1 from xUnit: unit tests, the full contract-sample matrix (`testdata/contract-samples/`, byte-identical to the C# suite), WebSocket integration tests over plaintext HTTP, and 12 real-TLS network integration cases, plus slow-hash smoke tests with production Argon2 parameters.
+- Test suite ported 1:1 from xUnit: unit tests, the full contract-sample matrix (`testdata/contract-samples/`, byte-identical to the C# suite), WebSocket integration tests over plaintext HTTP, and 12 real-TLS network integration cases, plus slow-hash smoke tests with production Argon2 parameters and pinned Isopoh interop contract tests.
 - CI (`ci.yml`) and release (`release.yml`) workflows rewritten for Go: gofmt/vet/test with race detection, contract-sample checksum verification, and a linux-x64/win-x64 static-binary release matrix with `-X main.version` injection.
 
 ## [0.5.0] - 2026-09-04
@@ -107,7 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial import and baseline release of TextCascade Server with Minimal API, Kestrel WebSocket, Argon2 password hashing, and token authentication.
 
-[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v1.0.0-Alpha...HEAD
+[1.0.0-Alpha]: https://github.com/long45343/TextCascade-Server/compare/v0.5.0...v1.0.0-Alpha
 [0.5.0]: https://github.com/long45343/TextCascade-Server/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/long45343/TextCascade-Server/compare/v0.3.5...v0.4.0
 [0.3.5]: https://github.com/long45343/TextCascade-Server/compare/v0.3.0...v0.3.5

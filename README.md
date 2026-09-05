@@ -88,7 +88,8 @@ TextCascade-Server/                (go 分支,纯 Go 仓库)
 ### 从 C# 版迁移
 
 - `users.json` / `textcascade.state.json` / `textcascade.toml` / PEM 证书格式不变,原样沿用。
-- **存量密码哈希不兼容**:Go 版 Argon2 PHC 编码自洽,切换后须对每个存量用户执行 `user passwd` 重置密码(客户端无需改动,重置为同一密码后旧剪贴板仍可解密)。
+- **存量密码哈希直接兼容**:Argon2id 为标准算法,Go 版可验证 C# 版创建的全部存量哈希(已在生产切换时实测),用户无感迁移,无需重置密码。
+- 存量 token 继续有效(同一 secret、标准 HMAC);如需强制重新登录,对目标用户执行 `user revoke-tokens`。
 - systemd 单元沿用,仅替换二进制路径。
 - 其余线协议、错误码、关闭码、默认值零偏差;仅 TLS ALPN 只广播 `http/1.1`(无 h2)。
 
@@ -259,7 +260,8 @@ Built on Go's `net/http` with native `gorilla/websocket` connections, TLS-termin
 ### Migrating from the C# server
 
 - `users.json` / `textcascade.state.json` / `textcascade.toml` / PEM certificates are unchanged and can be carried over as-is.
-- **Existing password hashes are incompatible**: the Go build uses its own self-consistent Argon2 PHC encoding; reset every user's password via `user passwd` after switching (clients need no changes; after resetting to the same password, old clipboards still decrypt).
+- **Existing password hashes are directly compatible**: Argon2id is a standardized algorithm and the Go build verifies every hash created by the C# build (verified during the production switchover) — users migrate transparently, no password resets.
+- Existing tokens remain valid (same secret, standard HMAC); to force re-login for a user, run `user revoke-tokens`.
 - The systemd unit carries over; only the binary path changes.
 - Everything else on the wire is byte-identical; the only declarative difference is ALPN advertising `http/1.1` only (no h2).
 

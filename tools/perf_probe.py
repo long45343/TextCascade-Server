@@ -330,9 +330,14 @@ async def cmd_slow(args):
 
 
 def main():
+    global HOST, PORT
     parser = argparse.ArgumentParser()
     parser.add_argument("--user", required=True)
     parser.add_argument("--password", required=True)
+    parser.add_argument("--host", default=HOST,
+                        help="server host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=PORT,
+                        help="server port (default: 8443)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     hold = sub.add_parser("hold")
@@ -355,6 +360,7 @@ def main():
     slow.set_defaults(func=cmd_slow)
 
     args = parser.parse_args()
+    HOST, PORT = args.host, args.port
     asyncio.run(args.func(args))
 
 

@@ -30,7 +30,7 @@
 | Q3 | 验收策略 | 测试全量 1:1 搬运 |
 | Q4 | WebSocket 库 | gorilla/websocket |
 | Q5 | 入站 JSON | encoding/json + 手写 token 级预扫描器（`internal/protocol/jsonscan.go`，详见 §7.7-A） |
-| Q6 | Argon2 兼容 | **不与 Isopoh 兼容**：Go 自洽 PHC 编码（golang.org/x/crypto/argon2）；迁移时重置全部存量密码（§12） |
+| Q6 | Argon2 兼容 | 与 Isopoh 产物**字节级互通**（实测见 §3.1 与决策台账 Q6 补记）：x/crypto/argon2 + 自写 PHC 编解码；存量密码无需重置 |
 | Q7 | TOML | pelletier/go-toml/v2 |
 | Q8 | 单实例锁 | gofrs/flock |
 | Q9 | 用户文件监听 | fsnotify + 250ms 防抖 + 30 秒轮询兜底 |
@@ -45,7 +45,7 @@
 
 ## 3. 声明性差异（相对 C# v0.5.0 的全部偏差）
 
-1. **存量 Argon2 哈希不兼容**（Q6）：Go 版 PHC 编码自洽，无法验证 C# 版创建的 `users.json` 存量哈希。迁移时按 §12 重置全部用户密码。客户端零改动（Argon2 仅服务端使用；E2E 密钥由客户端本地 PBKDF2 从密码派生，与服务端哈希无关，重置为同一密码后旧剪贴板仍可解密）。
+1. **Argon2 哈希与 Isopoh 字节级互通**（Q6）：Argon2id 为标准算法，Isopoh（C# 版）与 x/crypto（Go 版）对相同 (password, salt, m, t, p) 产出相同哈希字节；Isopoh 的唯一怪癖是忽略配置的 Threads 并自行选择 lane 数（写入 PHC 的 `p=` 与配置的 Argon2Parallelism 可能不一致），但其计算标准且如实记录于 PHC 串，Go 版 Verify 按串内参数重算即可验证。互通性经双向实测锁定（C# 生成 → Go 验证、Go 生成 → C# 验证），并有契约测试固化（`internal/auth` 的 Isopoh 互通字面量用例）。存量 `users.json` 原样沿用，迁移无需重置密码；登录响应对 Isopoh 产物携带 `needsRehash=true`（存储 p 与配置不一致所致），与 C# 版自身行为一致。客户端零改动。
 2. **仅 HTTP/1.1**（Q11）：Go 版 TLS ALPN 显式只广播 `http/1.1`，不提供 h2。Kestrel 默认广播 h2+http/1.1。对协议无影响（RFC6455 升级仅存在于 HTTP/1.1；gorilla/websocket 亦仅支持 h1 升级）。
 3. **Windows 私钥存储**：C# 需区分 DefaultKeySet/EphemeralKeySet（SChannel 限制）；Go 私钥仅在内存中，无对应问题，`internal/hosting/cert.go` 不含平台分支。
 4. 除此之外，登录响应、token、协议帧、错误码、close code、文件格式、TOML 键、环境变量、CLI 行为**全部零偏差**。
@@ -419,18 +419,18 @@ testdata/contract-samples/      ← 复制自 main 的 TestCascade.Server.Tests/
 
 ## 11. 迁移注意事项（生产切换 runbook，Q6 结果）
 
-1. **切换前必须重置全部用户密码**：Go 版无法验证 C# 创建的存量 Argon2 哈希。停机窗口内对每个存量用户执行 `TextCascade.Server user passwd --username <u>`（Go 版二进制）。
-2. token 与 tokenVersion 机制不变：重置密码不撤销已签发 token；如需强制重新登录，对每个用户执行 `user revoke-tokens`（可选步骤，明确决策后加入 runbook）。
-3. users.json / textcascade.state.json / textcascade.toml 格式不变，原样沿用；证书 PEM 原样沿用（PFX 路径实现首日验证）。
-4. systemd 单元沿用（二进制路径替换）；perf.md 场景重测并修订内存目标。
+1. **无需重置密码**：Go 版可直接验证 C# 创建的存量 Argon2 哈希（Q6 互通性实测，见 §3.1）。已在生产切换时验证：C# CLI 创建的测试用户以既有密码登录 Go 版成功，真实存量用户以 C# 签发的 token 直连成功。
+2. token 与 tokenVersion 机制不变：C# 版签发的存量 token 在 Go 版下继续有效（同一 secret、标准 HMAC）；如需强制重新登录，对目标用户执行 `user revoke-tokens`（可选步骤）。
+3. users.json / textcascade.state.json / textcascade.toml 格式不变，原样沿用；证书 PEM 原样沿用（PFX 路径由集成测试覆盖）。
+4. systemd 单元沿用（二进制路径替换）。perf.md 已按 Go 版重新实测并修订（2026-09-05）：全部性能目标以原始阈值达标。
 
 ## 12. 验收清单
 
-- [ ] 契约测试全矩阵通过（与 C# 相同样本、相同字节不变式）
-- [ ] 单元 162 + 网络 12 + SlowHash 3 等价例全绿
-- [ ] C# 版 §10.2 计划中尚未实施的 6 个补齐用例（子协议 400、hello 超时、NeedsRehash 不重写、同 clientId 排除、用户隔离、慢连接取消）**不在本次范围**（1:1 原则：C# 没有的测试不发明）
-- [ ] 手动对拍：Go 版与 C# 版同时挂起，同一客户端登录两端行为一致（welcome/广播/恢复）
-- [ ] perf.md 场景重测，内存目标修订
+- [x] 契约测试全矩阵通过（与 C# 相同样本、相同字节不变式；29 个样本复制入 `testdata/contract-samples/`，与 main 逐字节一致）
+- [x] 单元 + 网络 12 + SlowHash 3 等价例全绿（Go 版按用例语义 1:1 搬运，数量与 C# 断言一一对应）
+- [x] C# 版 §10.2 计划中尚未实施的 6 个补齐用例（子协议 400、hello 超时、NeedsRehash 不重写、同 clientId 排除、用户隔离、慢连接取消）**不在本次范围**（1:1 原则：C# 没有的测试不发明）
+- [x] 生产并行对拍：Go 版以并行实例与 C# 版同时挂起（共用 users.json/证书/token secret），C# CLI 创建的用户以既有密码登录 Go 版成功，真实客户端在切换后以 C# 签发的存量 token 直连成功并完成 hello/clip/广播全链路（2026-09-05）
+- [x] perf.md 场景重测完成，全部目标以原始阈值达标（2026-09-05，详见 perf.md）
 
 ## 13. 继承的实现差距台账（1:1 保留，不借迁移修复）
 
