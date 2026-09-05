@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -170,41 +169,57 @@ func TestUserLoopFailureNotifiesCoordinator(t *testing.T) {
 
 // ---- UserLoopConcurrencyTests ----
 
-func TestStartIfIdleCreatesSingleLoopUnderConcurrency(t *testing.T) {
-	h, coord := newTestHub(t, 1)
+// waitLoopActive 阻塞直到用户循环被证明正在消费 job（处理一个可观测的
+// PongJob 并更新 LastSeen）。此门控消除测试对调度时序的依赖：一旦 job 被
+// 处理，readerActive 必然被该循环持有且不会再释放（RunUserLoop 不返回）。
+func waitLoopActive(t *testing.T, h *hub.Hub) {
+	t.Helper()
+	conn := newDummyConnection(t, newTestConfig(), "gate")
+	// HelloReceived 初始为 false，循环处理 HelloJob 后翻真——无初始化值歧义。
+	require.True(t, h.TryWriteJob(models.HelloJob{
+		Connection: conn,
+		Hello:      &protocol.ClientHello{ClientID: "gate", ClientName: "gate"},
+	}))
+	deadline := time.Now().Add(10 * time.Second)
+	for !conn.State.HelloReceived() {
+		if time.Now().After(deadline) {
+			t.Fatal("user loop did not start in time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
-	var running atomic.Int32
+func TestStartIfIdleCreatesSingleLoopUnderConcurrency(t *testing.T) {
+	h, _ := newTestHub(t, 1)
+
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			h.StartIfIdle()
-			running.Add(1)
 		}()
 	}
 	wg.Wait()
 
-	// 循环已启动；直接再调 RunUserLoop 必须被 CAS 拒绝（证明只有一个读者）。
+	// 门控：确证唯一循环正在运行。
+	waitLoopActive(t, h)
+
+	// 循环占住 readerActive：再次调用 RunUserLoop 必被 CAS 立即拒绝。
 	err := h.RunUserLoop()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already running")
-
-	// 通过投递 DisconnectJob 结束干扰并断言循环处理正常。
-	_ = coord
 }
 
 func TestRunUserLoopRejectsConcurrentReader(t *testing.T) {
 	h, _ := newTestHub(t, 1)
 
-	done := make(chan struct{})
 	go func() {
 		_ = h.RunUserLoop()
-		close(done)
 	}()
 
-	// 等待首个循环占住 readerActive。
-	time.Sleep(50 * time.Millisecond)
+	// 门控：等待首个循环真正占住 readerActive（而非依赖 sleep 时序）。
+	waitLoopActive(t, h)
 
 	err := h.RunUserLoop()
 	require.Error(t, err)
