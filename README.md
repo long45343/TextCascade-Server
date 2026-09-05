@@ -194,19 +194,14 @@ GitHub Release 提供两种静态单文件包,目标机无需任何运行时:
 
 ## English
 
-A lightweight, reliable, high-performance server that synchronizes only the latest text value per user. No history, no database.
+A lightweight, reliable, high-performance clipboard sync server.
 
-Built on Go's `net/http` with native `gorilla/websocket` connections, TLS-terminated, stateless-token auth with tokenVersion revocation. After a server restart, clients report a snapshot within a recovery window, then receive only the latest value. The wire contract is identical to the C# implementation (protocol, file formats, CLI, error codes, defaults).
+Built on Go's `net/http` with native `gorilla/websocket` connections, TLS-terminated, stateless-token auth with tokenVersion revocation. After a server restart, clients report a snapshot within a recovery window, then receive only the latest value. The early C# version can be migrated painlessly.
 
 ### Highlights
 
-- **Latest-value only**: one current text per user; no history, no offline backfill.
-- **No database**: accounts in `users.json`, text and version in memory; clients recover after restart.
-- **Security-first**: TLS terminated in-process; no plaintext HTTP login; Argon2(id) password hashing; token travels in the Authorization header, never the URL.
-- **Concurrency isolation**: one single-consumer `RunUserLoop` goroutine per user, per-connection read loop and bounded send channel; slow connections only back up their own queue.
-- **Rate limiting**: sliding-window login limits per IP/user, token-bucket clip burst and rate control.
-- **Explicit errors**: protocol errors are returned explicitly; slow peers are isolated or dropped; no 1013/4408 close codes.
-- **Single-process hosting**: managed by systemd or a Windows Service with auto-restart.
+- **Security-first**: no plaintext HTTP login; Argon2(id) password hashing, while clients can configure their own encryption parameters.
+- **Excellent performance**: see [perf.md](perf.md).
 - **Static single binary**: self-contained Go build; no runtime prerequisites.
 
 ### Tech Stack
@@ -243,7 +238,7 @@ Built on Go's `net/http` with native `gorilla/websocket` connections, TLS-termin
 
    A token-secret env var (>= 32 bytes) and a TLS certificate are required; startup fails if missing or invalid.
 
-### Certificate Support Matrix
+### Certificate Type Support
 
 | Format | Supported | Notes |
 |---|---|---|
@@ -258,7 +253,7 @@ Built on Go's `net/http` with native `gorilla/websocket` connections, TLS-termin
 - **Existing password hashes are directly compatible**: Argon2id is a standardized algorithm and the Go build verifies every hash created by the C# build (verified during the production switchover) — users migrate transparently, no password resets.
 - Existing tokens remain valid (same secret, standard HMAC); to force re-login for a user, run `user revoke-tokens`.
 - The systemd unit carries over; only the binary path changes.
-- Everything else on the wire is byte-identical; the only declarative difference is ALPN advertising `http/1.1` only (no h2).
+- Everything else on the wire is byte-identical; the only declarative difference is ALPN advertising `http/1.1`.
 
 ### Configuration
 
