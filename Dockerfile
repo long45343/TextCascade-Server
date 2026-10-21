@@ -1,11 +1,13 @@
-# syntax=docker/dockerfile:1
-#
 # TextCascade Server — 运行镜像。
 #
 # 构建阶段固定在 BUILDPLATFORM 上做原生交叉编译（Go 交叉编译不需要 QEMU），
 # 因此多架构构建不会退化成模拟执行；运行阶段才切到 TARGETPLATFORM。
 #   构建：docker build -t textcascade-server .
 #   版本：--build-arg VERSION=1.0.0
+#
+# 不使用 `# syntax=docker/dockerfile:1`：本文件只用内置 Dockerfile 前端支持的指令，
+# 而该指令会强制从 Docker Hub 拉取前端镜像，在无法直连 registry-1.docker.io 的
+# 环境（含本项目生产机）会让构建直接失败。
 #
 # 运行时基底为 distroless static：无 shell、无包管理器，进程以 UID 65532 运行。
 # 容器内无法执行 shell 脚本，用户管理请用
