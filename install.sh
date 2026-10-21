@@ -71,6 +71,7 @@ DELETE_USER=0
 LIST_ONLY=0
 COUNT=0
 TAG=
+WIZARD=1
 
 TTY_IN=
 if [ -r /dev/tty ]; then
@@ -104,6 +105,10 @@ trap 'cleanup; exit 130' INT TERM
 usage() {
     cat <<'EOF'
 用法：sh install.sh [动作] [选项]
+
+直接运行 `sh install.sh` 会进入交互向导：逐步询问版本、端口、证书与首个用户，
+最后汇总确认后才改动系统。已用选项指定的项目不会再问；加 -y 则全部采用默认值、
+不进行任何提问（适合脚本与 CI）。
 
 动作（默认 install）：
   install                              安装或修复现有安装（保留配置、密钥、用户）
@@ -139,7 +144,9 @@ usage() {
   --no-start                           只落地文件，不启动服务
   --purge                              uninstall 时同时删除配置与数据
   --delete-user                        uninstall --purge 时同时删除系统用户
-  -y, --yes                            不询问确认
+  -y, --yes                            不做任何提问，采用默认值（隐式 --no-wizard）
+  --wizard                             强制进入交互向导
+  --no-wizard                          跳过向导，仅用命令行参数与默认值
   -h, --help                           显示本帮助
 
 环境变量：
@@ -158,6 +165,8 @@ while [ $# -gt 0 ]; do
             ACTION=$1; shift ;;
         -y|--yes) ASSUME_YES=1; shift ;;
         --list) ACTION=list; shift ;;
+        --wizard) WIZARD=1; shift ;;
+        --no-wizard) WIZARD=0; shift ;;
         --no-start) NO_START=1; shift ;;
         --no-verify) NO_VERIFY=1; shift ;;
         --force) FORCE=1; shift ;;
@@ -296,9 +305,52 @@ confirm() {
     [ "$ASSUME_YES" = 1 ] && return 0
     have_tty || return 1
     printf '%s [y/N] ' "$1"
-    read -r _ans || return 1
+    read -r _ans < "$TTY_IN" || return 1
     case "$_ans" in
         y|Y|yes|YES|1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 读一行输入到 REPLY；无 TTY 或读失败时返回非零。
+ask() {
+    have_tty || return 1
+    printf '%s' "$1"
+    if ! read -r REPLY < "$TTY_IN"; then
+        printf '\n'
+        return 1
+    fi
+    REPLY=$(printf '%s' "$REPLY" | tr -d '\r')
+    return 0
+}
+
+# ask 的带默认值版本：直接回车采用 $2。
+ask_default() {
+    _prompt=$1
+    _def=$2
+    if [ -n "$_def" ]; then
+        ask "$_prompt [$_def]: "
+    else
+        ask "$_prompt: "
+    fi || return 1
+    if [ -z "$REPLY" ]; then
+        REPLY=$_def
+    fi
+    return 0
+}
+
+# ask 的是/否版本；返回 0 表示是。
+ask_yes() {
+    _prompt=$1
+    _def=${2:-n}
+    if [ "$_def" = y ]; then
+        ask "$_prompt [Y/n]: " || return 1
+    else
+        ask "$_prompt [y/N]: " || return 1
+    fi
+    case "$REPLY" in
+        "") [ "$_def" = y ] ;;
+        y|Y|yes|YES) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1246,6 +1298,214 @@ print_summary() {
 EOF
 }
 
+# ---------------------------------------------------------------- 交互向导
+
+# 记住哪些参数是用户显式给出的。向导只询问未指定的项，
+# 这样 "sh install.sh" 是全程问答，而 "sh install.sh --port 9443" 只问其余。
+M_VERSION=0; M_PORT=0; M_CERT=0; M_USER=0
+
+mark_explicit() {
+    if [ -n "$VERSION" ] || [ -n "$FROM_FILE" ] || [ "$INCLUDE_PRERELEASE" = 1 ]; then
+        M_VERSION=1
+    fi
+    if [ "$PORT" != 8443 ]; then
+        M_PORT=1
+    fi
+    if [ -n "$CERT_SRC" ] || [ "$SELF_SIGNED" = 1 ]; then
+        M_CERT=1
+    fi
+    if [ -n "$USERNAME" ]; then
+        M_USER=1
+    fi
+    # 显式给了证书参数就说明想覆盖证书；密码/用户已定时不再追问首个用户
+    if [ "$PASSWORD_STDIN" = 1 ]; then
+        M_USER=1
+    fi
+}
+
+wizard_enabled() {
+    [ "$WIZARD" = 1 ] && have_tty && [ "$ASSUME_YES" = 0 ]
+}
+
+wizard_intro() {
+    cat <<EOF
+
+====================================================================
+ TextCascade Server 安装向导
+====================================================================
+ 每一步都给出默认值，直接回车即采用。全部参数会在最后汇总确认，
+ 确认前不会改动系统。若想跳过问答，用 -y 或直接带命令行参数。
+====================================================================
+EOF
+}
+
+# 1) 版本
+wizard_version() {
+    [ "$M_VERSION" = 1 ] && return 0
+
+    load_releases
+    _default=
+    while IFS="$TAB" read -r _tag _pre _note; do
+        case "$_note" in *".NET 版本"*) continue ;; esac
+        [ "$_pre" != "true" ] || continue
+        _default=$_tag
+        break
+    done <<EOF
+$(release_entries)
+EOF
+    [ -n "$_default" ] || _default=$(release_entries | awk -F'\t' '$3 !~ /\.NET 版本/ {print $1; exit}')
+    [ -n "$_default" ] || die "仓库 $REPO 没有可安装的版本。"
+
+    say ""
+    say "可用版本（新 → 旧）："
+    _n=0
+    while IFS="$TAB" read -r _tag _pre _note; do
+        _n=$((_n + 1))
+        _mark=
+        [ "$_tag" = "$_default" ] && _mark=" ← 推荐"
+        printf '  %2d) %-22s %s%s\n' "$_n" "$_tag" "$_note" "$_mark"
+    done <<EOF
+$(release_entries)
+EOF
+
+    while :; do
+        ask "选择版本序号（回车用 ${_default#v}）: " || { TAG=$_default; VERSION=${TAG#v}; return 0; }
+        case "$REPLY" in
+            "") TAG=$_default; VERSION=${TAG#v}; return 0 ;;
+            *[!0-9]*) say "请输入序号。" ; continue ;;
+        esac
+        [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "$_n" ] \
+            || { say "序号超出范围（1-$_n）。"; continue; }
+        TAG=$(release_entries | sed -n "${REPLY}p" | cut -f1)
+        VERSION=${TAG#v}
+        return 0
+    done
+}
+
+# 2) 监听端口
+wizard_port() {
+    [ "$M_PORT" = 1 ] && return 0
+    ask_default "监听端口" "$PORT" || return 0
+    case "$REPLY" in
+        ""|*[!0-9]*) return 0 ;;
+    esac
+    if [ "$REPLY" -ge 1 ] && [ "$REPLY" -le 65535 ]; then
+        PORT=$REPLY
+    else
+        warn "端口必须是 1-65535，保持 $PORT。"
+    fi
+}
+
+# 3) 证书
+wizard_cert() {
+    [ "$M_CERT" = 1 ] && return 0
+
+    # 已有安装且证书可用时默认沿用
+    _existing=
+    if [ -f "$CONFIG_FILE" ]; then
+        _existing=$(sed -n 's/^[[:space:]]*certificate_path[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$CONFIG_FILE" | head -n 1)
+    fi
+
+    if [ -n "$_existing" ] && [ -f "$_existing" ]; then
+        ask_yes "沿用现有证书 $_existing" y || return 0
+        if [ "$REPLY" != "" ] && [ "$REPLY" != "n" ] && [ "$REPLY" != "N" ]; then
+            return 0
+        fi
+    fi
+
+    say ""
+    say "TLS 证书是必需项（服务只提供 HTTPS）。"
+    say "  1) 我有证书文件（PEM 证书 + 同目录 .key，或单文件 PFX/P12）"
+    say "  2) 生成自签证书（仅测试用；客户端需要跳过校验或手动信任）"
+    while :; do
+        ask "选择 [1]: " || return 0
+        case "${REPLY:-1}" in
+            1)
+                ask "证书文件路径（.pem/.crt/.pfx/.p12）: " || return 0
+                [ -n "$REPLY" ] || { say "路径不能为空。"; continue; }
+                CERT_SRC=$REPLY
+                case "$CERT_SRC" in
+                    *.pfx|*.p12|*.PFX|*.P12) return 0 ;;
+                esac
+                if [ -f "${CERT_SRC%.*}.key" ] || grep -q 'BEGIN .*PRIVATE KEY' "$CERT_SRC" 2>/dev/null; then
+                    return 0
+                fi
+                ask "私钥路径（回车沿用 ${CERT_SRC%.*}.key）: " || return 0
+                [ -n "$REPLY" ] && KEY_SRC=$REPLY
+                return 0
+                ;;
+            2)
+                ask_default "自签证书的域名或主机名" "$(hostname 2>/dev/null || echo localhost)" || return 0
+                SELF_SIGNED=1
+                CN=$REPLY
+                warn "自签证书仅适合内网测试。"
+                return 0
+                ;;
+            *) say "请输入 1 或 2。" ;;
+        esac
+    done
+}
+
+# 4) 首个用户
+wizard_user() {
+    [ "$M_USER" = 1 ] && return 0
+
+    if [ -f "$USERS_FILE" ] && [ "$(count_users)" != 0 ]; then
+        say ""
+        say "已有用户，跳过创建（可用 runuser 命令另行增删）。"
+        return 0
+    fi
+
+    say ""
+    if ask_yes "现在创建第一个用户" y; then
+        while :; do
+            ask "用户名: " || return 0
+            [ -n "$REPLY" ] || { say "用户名不能为空。"; continue; }
+            USERNAME=$REPLY
+            break
+        done
+        PASSWORD_STDIN=0
+        PASSWORD=
+        return 0
+    fi
+}
+
+wizard_review() {
+    _shown_cert=${CERT_SRC:-$CERT_DIR/${CERT_NAME:-server.pem}}
+    [ "$SELF_SIGNED" = 1 ] && _shown_cert="自签（CN=$CN）"
+    cat <<EOF
+
+--------------------------------------------------------------------
+即将执行的操作
+  版本      : ${VERSION:-（待解析）}
+  架构      : linux-$ARCH_TAG
+  监听      : $BIND:$PORT（仅 HTTPS）
+  证书      : $_shown_cert
+  程序      : $BIN_DIR/$APP
+  配置      : $CONFIG_FILE
+  secret    : $ENV_FILE
+  用户表    : $USERS_FILE
+  状态文件  : $DATA_DIR/textcascade.state.json
+  首个用户  : ${USERNAME:-（不创建）}
+  已有数据  : $(if [ -f "$CONFIG_FILE" ]; then echo "检测到现有安装，将保留配置/secret/用户，仅更新程序"; else echo "全新安装"; fi)
+--------------------------------------------------------------------
+EOF
+    confirm "确认开始安装？" || die "已取消，未做任何改动。"
+}
+
+run_wizard() {
+    wizard_intro
+    wizard_version
+    wizard_port
+    wizard_cert
+    wizard_user
+
+    # 版本可能由向导选定（离线包时可能仍为空，留给 resolve_version 从文件名推断）
+    [ -n "$VERSION" ] && _check_version_shape
+    check_cert_args
+    wizard_review
+}
+
 # ---------------------------------------------------------------- 动作
 
 preflight() {
@@ -1259,15 +1519,26 @@ preflight() {
 
 action_install() {
     preflight
-    step "解析版本"
-    resolve_version
-    say "目标版本：$VERSION（linux-$ARCH_TAG）"
 
-    step "检查证书参数"
-    check_cert_args
+    if wizard_enabled; then
+        run_wizard
+        if [ -z "$VERSION" ]; then
+            step "解析版本"
+            resolve_version
+        fi
+        step "获取发行包"
+        acquire_payload
+    else
+        step "解析版本"
+        resolve_version
+        say "目标版本：$VERSION（linux-$ARCH_TAG）"
 
-    step "获取发行包"
-    acquire_payload
+        step "检查证书参数"
+        check_cert_args
+
+        step "获取发行包"
+        acquire_payload
+    fi
 
     step "准备系统用户与目录"
     ensure_user_and_dirs
@@ -1415,6 +1686,8 @@ if [ "$PASSWORD_STDIN" = 1 ]; then
     [ -n "$PASSWORD" ] || die "标准输入为空：--password-stdin 需要一行非空密码。"
     ASSUME_YES=1
 fi
+
+mark_explicit
 
 case "$ACTION" in
     install) action_install ;;
