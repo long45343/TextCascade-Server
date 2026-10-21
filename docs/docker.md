@@ -223,14 +223,29 @@ docker inspect --format '{{index .Config.Labels "org.opencontainers.image.versio
 
 ### 镜像加速（中国大陆）
 
+`ghcr.io` 与 `gcr.io` 在部分网络下不可达。两个基础镜像都可通过 `--build-arg` 换成镜像站：
+
 ```bash
-# 拉取镜像时使用镜像站
+# 拉取已发布镜像时使用镜像站
 docker pull docker.m.daocloud.io/ghcr.io/long45343/textcascade-server:latest
 docker tag  docker.m.daocloud.io/ghcr.io/long45343/textcascade-server:latest \
             ghcr.io/long45343/textcascade-server:latest
 
-# 构建本地镜像时，可替换 Dockerfile 的 builder 基础镜像
-docker build --build-arg GO_IMAGE=docker.m.daocloud.io/library/golang:1.27-alpine .
+# 本地构建时同时替换 builder 与 runtime 基底
+docker build \
+  --build-arg GO_IMAGE=docker.m.daocloud.io/library/golang:1.27-alpine \
+  --build-arg RUNTIME_IMAGE=<可用的 distroless 镜像地址> \
+  -t textcascade-server .
+```
+
+Dockerfile 不含 `# syntax=` 指令，因此构建时不需要访问 Docker Hub 拉取前端镜像。
+
+若两个基底都无法获取，可在能联网的机器上 `docker save` 后传输：
+
+```bash
+docker save textcascade-server:latest | gzip > tc-image.tar.gz
+scp tc-image.tar.gz root@host:/tmp/
+ssh root@host 'gunzip -c /tmp/tc-image.tar.gz | docker load'
 ```
 
 ---
@@ -454,12 +469,27 @@ Rewrite absolute paths inside the config to the container paths (`/etc/textcasca
 
 ### Registry mirror (mainland China)
 
+`ghcr.io` and `gcr.io` are unreachable from some networks. Both base images can be redirected with `--build-arg`:
+
 ```bash
-# Pull through a mirror
+# Pull a published image through a mirror
 docker pull docker.m.daocloud.io/ghcr.io/long45343/textcascade-server:latest
 docker tag  docker.m.daocloud.io/ghcr.io/long45343/textcascade-server:latest \
             ghcr.io/long45343/textcascade-server:latest
 
-# When building locally, swap the builder base image
-docker build --build-arg GO_IMAGE=docker.m.daocloud.io/library/golang:1.27-alpine .
+# When building locally, redirect both the builder and runtime bases
+docker build \
+  --build-arg GO_IMAGE=docker.m.daocloud.io/library/golang:1.27-alpine \
+  --build-arg RUNTIME_IMAGE=<reachable distroless image> \
+  -t textcascade-server .
+```
+
+The Dockerfile carries no `# syntax=` directive, so a build never needs to reach Docker Hub for a frontend image.
+
+If neither base is obtainable, transfer the image from a machine that has network access:
+
+```bash
+docker save textcascade-server:latest | gzip > tc-image.tar.gz
+scp tc-image.tar.gz root@host:/tmp/
+ssh root@host 'gunzip -c /tmp/tc-image.tar.gz | docker load'
 ```
