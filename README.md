@@ -28,7 +28,7 @@
 | 用户文件监听 | `fsnotify` + 250ms 防抖 + 30s 轮询兜底 |
 | 用户存储 | `users.json` |
 | 协议子协议 | `textcascade.v1` |
-| 产品版本 | SemVer,当前 `0.5.0` |
+| 产品版本 | SemVer,当前 `0.5.5` |
 
 ### 仓库结构
 
@@ -245,7 +245,7 @@ Built on Go's `net/http` with native `gorilla/websocket` connections, TLS-termin
 | Users file watching | `fsnotify` + 250ms debounce + 30s poll fallback |
 | User store | `users.json` |
 | Subprotocol | `textcascade.v1` |
-| Version | SemVer, currently `0.5.0` |
+| Version | SemVer, currently `0.5.5` |
 
 ### Quick Start
 

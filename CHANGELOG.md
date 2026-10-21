@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.5] - 2026-10-21
 
 ### Added
 - First-class Docker support: a multi-stage `Dockerfile` (native cross-compilation on `$BUILDPLATFORM`, `gcr.io/distroless/static-debian12:nonroot` runtime, ~11 MB image, UID 65532, `linux/amd64` and `linux/arm64`), `.dockerignore`, a hardened `compose.yaml` (`read_only`, `cap_drop: ALL`, `no-new-privileges`, `tmpfs: /tmp`, `pids_limit: 100`), and an in-image default config at `/opt/textcascade/textcascade.toml` so a bare `docker run` starts without a bind-mounted config. See `docs/docker.md`.
@@ -121,7 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial import and baseline release of TextCascade Server with Minimal API, Kestrel WebSocket, Argon2 password hashing, and token authentication.
 
-[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v1.0.0-Alpha...HEAD
+[Unreleased]: https://github.com/long45343/TextCascade-Server/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/long45343/TextCascade-Server/compare/v1.0.0-Alpha...v0.5.5
 [1.0.0-Alpha]: https://github.com/long45343/TextCascade-Server/compare/v0.5.0...v1.0.0-Alpha
 [0.5.0]: https://github.com/long45343/TextCascade-Server/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/long45343/TextCascade-Server/compare/v0.3.5...v0.4.0
