@@ -28,7 +28,7 @@
 | 用户文件监听 | `fsnotify` + 250ms 防抖 + 30s 轮询兜底 |
 | 用户存储 | `users.json` |
 | 协议子协议 | `textcascade.v1` |
-| 产品版本 | SemVer,当前 `0.5.5` |
+| 产品版本 | SemVer,当前 `1.0.0` |
 
 ### 仓库结构
 
@@ -173,7 +173,41 @@ GitHub Release 提供两种静态单文件包,目标机无需任何运行时:
 
 ### 生产部署(systemd)
 
-参考 `deploy/textcascade-server.service`:
+一键安装(推荐):脚本与发行包都来自 GitHub。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/long45343/TextCascade-Server/go/install.sh \
+  -o /tmp/tc-install.sh
+sudo sh /tmp/tc-install.sh install --cert fullchain.pem --key privkey.pem --username alice
+```
+
+不加 `--version` 时:在交互终端下会列出仓库全部 Release(**新 → 旧**,标注日期、预发布与缺失 `linux-x64` 资产的版本),让你输入序号选择,回车取最新正式版;`-y` 或在无终端的环境(CI、管道)中则直接取最新正式版。先看有哪些版本:
+
+```bash
+sh /tmp/tc-install.sh list            # 只列版本,不安装;加 --prerelease 连预发布一起列
+```
+
+脚本会完成:按 GitHub API 解析版本 → 下载 Release 资产并校验 SHA-256 → 建系统用户与目录 → 安装证书 → 生成 token secret → 写配置与 systemd 单元 → 启动 → 创建首个用户 → 健康检查与一次真实登录验收。
+
+其他动作:
+
+```bash
+sudo sh /tmp/tc-install.sh upgrade                 # 升级到最新正式版
+sudo sh /tmp/tc-install.sh upgrade --version 1.0.0-Alpha
+sudo sh /tmp/tc-install.sh status
+sudo sh /tmp/tc-install.sh uninstall [--purge [--delete-user]]
+```
+
+要点:
+- 不要用 `curl ... | sh`:脚本需要用标准输入接收密码。先下载到文件再执行。
+- 已存在的 secret、`users.json`、证书、配置与 systemd 单元默认一律保留;二进制与单元按内容比对,内容相同则不替换、不重启,因此可反复执行做修复。
+- `upgrade` 保留全部数据,旧二进制留作 `TextCascade.Server.previous`。
+- **只支持 1.0.0-Alpha 起的 Go 静态版本**。0.5.0 及更早的 Release 是 .NET 单文件程序,需要 .NET 运行时,脚本会检测并拒绝。
+- 可选:`list`/`--list`(列出可用版本)、`--prerelease`(列表与"最新"都含预发布)、`--repo OWNER/REPO`、`--mirror https://ghfast.top`(GitHub 下载加速)、`--from-file`(离线包)、`--no-start`、`--force`。
+- 内网无法访问 GitHub 时:`TEXTCASCADE_GITHUB_MIRROR` / `TEXTCASCADE_GITHUB_TOKEN` 环境变量等价于 `--mirror` / token 注入;也可用 `--base-url` 指向自建文件服务器(`<base>/latest.txt` + `<base>/<version>/...`)。
+- 仅支持 systemd ≥ 235 的 Linux;发行包目前只提供 `x64`,ARM 主机需自行交叉编译。
+
+完整选项见 `sh install.sh --help`。手工部署参考 `deploy/textcascade-server.service`:
 - 以专用系统用户 `textcascade` 运行;先执行 `useradd --system --home /opt/textcascade-server --shell /usr/sbin/nologin textcascade`。
 - 以 systemd 托管,`Restart=on-failure`,开启 `ProtectSystem`/`ProtectHome`/`PrivateTmp` 等加固项。
 - 配置与 users.json 放 `/etc/textcascade/`,运行状态放 `/var/lib/textcascade/`,程序放 `/opt/textcascade-server/`;目录属主设为 `textcascade:textcascade`。
@@ -245,7 +279,7 @@ Built on Go's `net/http` with native `gorilla/websocket` connections, TLS-termin
 | Users file watching | `fsnotify` + 250ms debounce + 30s poll fallback |
 | User store | `users.json` |
 | Subprotocol | `textcascade.v1` |
-| Version | SemVer, currently `0.5.5` |
+| Version | SemVer, currently `1.0.0` |
 
 ### Quick Start
 
@@ -334,7 +368,41 @@ Pushing a `v*.*.*` tag (for example `v0.5.0`) runs tests, builds both single-fil
 
 ### Production (systemd)
 
-See `deploy/textcascade-server.service`:
+One-command install (recommended); both the script and the archives come from GitHub.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/long45343/TextCascade-Server/go/install.sh \
+  -o /tmp/tc-install.sh
+sudo sh /tmp/tc-install.sh install --cert fullchain.pem --key privkey.pem --username alice
+```
+
+Without `--version` it lists every release in the repo (newest first, with dates, prerelease markers, and any version missing a `linux-x64` asset) and asks you to pick a number when stdin is a terminal; Enter takes the latest stable release. With `-y` or no terminal (CI, pipes) it takes the latest stable release automatically. To just see the versions:
+
+```bash
+sh /tmp/tc-install.sh list            # list only, no install; add --prerelease to include prereleases
+```
+
+The script then resolves the version, downloads the release asset and verifies its SHA-256, creates the system user and directories, installs the certificate, generates the token secret, writes the config and systemd unit, starts the service, creates the first user, and verifies health plus a real login.
+
+Other actions:
+
+```bash
+sudo sh /tmp/tc-install.sh upgrade                 # upgrade to the latest stable release
+sudo sh /tmp/tc-install.sh upgrade --version 1.0.0-Alpha
+sudo sh /tmp/tc-install.sh status
+sudo sh /tmp/tc-install.sh uninstall [--purge [--delete-user]]
+```
+
+Notes:
+- Do not pipe the script into `sh` (`curl ... | sh`): it needs stdin for the password. Download it first.
+- Existing secret, `users.json`, certificate, config, and systemd unit are preserved by default; the binary and unit are compared by content, so an unchanged install is neither replaced nor restarted. Safe to re-run for repair.
+- `upgrade` keeps all data and saves the old binary as `TextCascade.Server.previous`.
+- **Go static builds from 1.0.0-Alpha onward only.** Releases 0.5.0 and earlier are .NET single-file apps that need the .NET runtime; the script detects and rejects them.
+- Optional: `list`/`--list` (list available versions), `--prerelease` (include prereleases in both the list and "latest"), `--repo OWNER/REPO`, `--mirror https://ghfast.top` (GitHub download accelerator), `--from-file` (offline archive), `--no-start`, `--force`.
+- When GitHub is unreachable: `TEXTCASCADE_GITHUB_MIRROR` / `TEXTCASCADE_GITHUB_TOKEN` are equivalent to `--mirror` and a token, and `--base-url` points at a self-hosted file server (`<base>/latest.txt` plus `<base>/<version>/...`).
+- Requires systemd ≥ 235; release archives currently ship `x64` only, so ARM hosts need to cross-compile.
+
+See `sh install.sh --help` for every option. Manual deployment reference: `deploy/textcascade-server.service`:
 - Run as the dedicated `textcascade` system user; create it with `useradd --system --home /opt/textcascade-server --shell /usr/sbin/nologin textcascade`.
 - Managed by systemd with `Restart=on-failure` and hardening flags (`ProtectSystem`, `ProtectHome`, `PrivateTmp`).
 - Config and `users.json` under `/etc/textcascade/`, runtime state under `/var/lib/textcascade/`, and binaries under `/opt/textcascade-server/`; set directory ownership to `textcascade:textcascade`.

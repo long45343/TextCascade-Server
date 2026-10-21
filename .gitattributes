@@ -1,0 +1,2 @@
+# Shell 脚本必须保持 LF：CRLF 会让 #!/bin/sh\r 在 Linux 上无法执行。
+*.sh text eol=lf
