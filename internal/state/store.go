@@ -194,7 +194,8 @@ func writeAtomic(path string, entries []stateEntry) error {
 	}
 	temporary := path + "." + hex.EncodeToString(suffix) + ".tmp"
 
-	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	// 0600：与 users.json 一致，不依赖运行环境 umask。
+	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}

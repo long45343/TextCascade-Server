@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- First-class Docker support: a multi-stage `Dockerfile` (native cross-compilation on `$BUILDPLATFORM`, `gcr.io/distroless/static-debian12:nonroot` runtime, ~11 MB image, UID 65532, `linux/amd64` and `linux/arm64`), `.dockerignore`, a hardened `compose.yaml` (`read_only`, `cap_drop: ALL`, `no-new-privileges`, `tmpfs: /tmp`, `pids_limit: 100`), and an in-image default config at `/opt/textcascade/textcascade.toml` so a bare `docker run` starts without a bind-mounted config. See `docs/docker.md`.
+- `--version` / `-v` prints the build version injected via `-ldflags "-X main.version=..."`. The `main.version` variable existed but was never read, so the flag previously fell through to the serve path and failed on the TLS certificate lookup.
+
+### Changed
+- `users.json` and the runtime state file are now written with mode `0600` instead of `0644`. The previous behavior relied on the systemd unit's `UMask=0077` to keep the Argon2 hashes from being world-readable; containers and other supervisors have no such umask. The systemd unit is unchanged (the umask is kept as defense in depth).
+- Startup now verifies that the parent directories of `files.users_file` and `files.state_file` exist and are writable, and exits with code 1 naming the offending path. Previously a missing directory only surfaced as a per-5s state flush warning while `/health` kept returning 200 — under a read-only container root filesystem with an unmounted volume this produced a service that reported healthy but could not authenticate anyone.
+- `linux/arm64` container images are published but have not been verified on ARM hardware.
+
 ## [1.0.0-Alpha] - 2026-09-05
 
 ### Changed

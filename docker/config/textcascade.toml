@@ -1,0 +1,14 @@
+# 宿主端配置（compose 挂载到容器 /etc/textcascade）。
+#
+# 路径必须是容器内路径。挂载是整体替换，不会与镜像内默认配置合并。
+# 其余键（auth / limits / rate_limit）省略即取内置安全默认值，
+# 完整键名见 docs/docker.md 与 deploy/textcascade.toml。
+
+[server]
+bind = "0.0.0.0"
+port = 8443
+certificate_path = "/etc/textcascade/certs/server.pem"
+
+[files]
+users_file = "/etc/textcascade/users.json"
+state_file = "/var/lib/textcascade/textcascade.state.json"

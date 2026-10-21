@@ -1,0 +1,5 @@
+# 用户数据与证书不进版本库
+users.json
+users.json.lock
+certs/*
+!certs/.gitkeep

@@ -1,0 +1,58 @@
+# TextCascade Server — 生产 compose 示例。
+#
+# 使用前准备（详见 docs/docker.md）：
+#   1. mkdir -p docker/config/certs docker/data
+#   2. 把 TLS 证书放到 docker/config/certs/server.pem（+ 同名 .key 边车）
+#   3. 写 docker/config/textcascade.toml（可从 deploy/docker/textcascade.toml 复制后改路径）
+#   4. 写 docker/textcascade.env，内容为 TEXTCASCADE_TOKEN_SECRET=<至少 32 字节>
+#      chmod 600 docker/textcascade.env
+#   5. chown -R 65532:65532 docker/config
+#   6. docker compose up -d
+#
+# 注意：docker/config 是目录挂载而非单文件挂载。users.json 采用
+# 「临时文件 + rename」原子写入，单文件挂载会因 inode 变更导致容器内热重载失效。
+
+services:
+  server:
+    image: ghcr.io/long45343/textcascade-server:latest
+    # 本地构建时改用：
+    # build:
+    #   context: .
+    container_name: textcascade-server
+
+    env_file:
+      - ./docker/textcascade.env
+
+    # 覆盖镜像默认 CMD，改用宿主挂载的配置。
+    command: ["serve", "--config", "/etc/textcascade/textcascade.toml"]
+
+    ports:
+      # 直接发布端口（iptables DNAT）以保留真实客户端 IP。
+      # 不要在 HTTP 层反代之后部署：登录限流按 RemoteAddr 计，会被合并成同一个来源。
+      - "8443:8443"
+
+    volumes:
+      # 配置 + users.json + 证书：需要宿主直接编辑与热重载，用 bind。
+      - ./docker/config:/etc/textcascade
+      # 运行状态：纯写入，交给 Docker 管理属主，用 named volume。
+      - textcascade-state:/var/lib/textcascade
+
+    # ---- 加固：服务只写上述两个卷，不写 /tmp ----
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m
+    pids_limit: 100
+
+    user: "65532:65532"
+
+    restart: unless-stopped
+
+    # 优雅停机：SIGTERM → bye → 1001 → drain 2s，10 秒足够。
+    stop_grace_period: 10s
+
+volumes:
+  textcascade-state:

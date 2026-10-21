@@ -177,7 +177,8 @@ func Save(path string, f *UsersFile) error {
 	}
 	temporary := path + "." + hex.EncodeToString(suffix) + ".tmp"
 
-	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	// 0600：users.json 含 Argon2 哈希，不可依赖运行环境 umask 收紧。
+	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}

@@ -59,3 +59,165 @@ jobs:
 
       - name: Test (network integration, race)
         run: go test ./internal/hosting/ -race -timeout 600s -v
+
+  docker:
+    name: Docker image build and smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: textcascade-server:ci
+          build-args: |
+            VERSION=0.0.0-ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify arm64 buildability
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          build-args: |
+            VERSION=0.0.0-ci
+          cache-from: type=gha
+
+      - name: Prepare runtime fixtures
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/tc"
+          mkdir -p "$WORK/config/certs" "$WORK/data"
+          openssl req -x509 -newkey rsa:2048 -days 2 -nodes \
+            -keyout "$WORK/config/certs/server.key" \
+            -out "$WORK/config/certs/server.pem" \
+            -subj "/CN=localhost" >/dev/null 2>&1
+          printf '%s\n' \
+            '[server]' \
+            'bind = "0.0.0.0"' \
+            'port = 8443' \
+            'certificate_path = "/etc/textcascade/certs/server.pem"' \
+            '' \
+            '[files]' \
+            'users_file = "/etc/textcascade/users.json"' \
+            'state_file = "/var/lib/textcascade/textcascade.state.json"' \
+            > "$WORK/config/textcascade.toml"
+          printf 'TEXTCASCADE_TOKEN_SECRET=%s\n' "$(openssl rand -base64 48)" > "$WORK/textcascade.env"
+          chmod 600 "$WORK/textcascade.env"
+          chmod -R 777 "$WORK"
+          echo "WORK=$WORK" >> "$GITHUB_ENV"
+
+      - name: --version reports injected build version
+        run: |
+          set -euo pipefail
+          out=$(docker run --rm textcascade-server:ci --version)
+          echo "$out"
+          echo "$out" | grep -q "0.0.0-ci"
+
+      - name: Start container with production hardening
+        run: |
+          set -euo pipefail
+          docker run -d --name tcs \
+            --user 65532:65532 \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:size=16m \
+            --pids-limit 100 \
+            --env-file "$WORK/textcascade.env" \
+            -v "$WORK/config:/etc/textcascade" \
+            -v "$WORK/data:/var/lib/textcascade" \
+            -p 18443:8443 \
+            textcascade-server:ci
+
+      - name: Wait for /health
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -skf --max-time 2 https://127.0.0.1:18443/health | grep -q '"status":"ok"'; then
+              echo "healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "health check did not pass"; docker logs tcs; exit 1
+
+      - name: Create user, then log in without restarting
+        run: |
+          set -euo pipefail
+          printf 'ci-password\n' | docker exec -i tcs /TextCascade.Server user add \
+            --config /etc/textcascade/textcascade.toml --username alice --password-stdin
+
+          # users.json 变更经 250ms 防抖后由 watcher 重载；首次登录需重试以避开该窗口。
+          code=""
+          for i in $(seq 1 20); do
+            code=$(curl -sk -o /tmp/login.json -w '%{http_code}' --max-time 8 \
+              -X POST https://127.0.0.1:18443/api/v1/login \
+              -H 'Content-Type: application/json' \
+              -d '{"username":"alice","password":"ci-password"}')
+            [ "$code" = "200" ] && break
+            sleep 0.5
+          done
+          cat /tmp/login.json; echo
+          test "$code" = "200"
+
+          bad=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
+            -X POST https://127.0.0.1:18443/api/v1/login \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"alice","password":"wrong"}')
+          test "$bad" = "401"
+
+      - name: users.json is written with mode 0600
+        run: |
+          set -euo pipefail
+          # bind 挂载在 NTFS/WSL 上不保留权限位，CI 是 Linux 宿主，可直接读宿主侧。
+          mode=$(stat -c '%a' "$WORK/config/users.json")
+          echo "users.json mode: $mode"
+          test "$mode" = "600"
+
+      - name: Container process runs as 65532
+        run: |
+          set -euo pipefail
+          pid=$(docker inspect --format '{{.State.Pid}}' tcs)
+          uid=$(grep -m1 '^Uid:' "/proc/$pid/status" | awk '{print $2}')
+          echo "container uid: $uid"
+          test "$uid" = "65532"
+
+      - name: Missing volume fails fast with a path
+        run: |
+          set -euo pipefail
+          set +e
+          out=$(docker run --rm \
+            --user 65532:65532 \
+            --read-only \
+            --env-file "$WORK/textcascade.env" \
+            -v "$WORK/config:/etc/textcascade" \
+            textcascade-server:ci 2>&1)
+          rc=$?
+          set -e
+          echo "$out"; echo "exit=$rc"
+          test "$rc" -eq 1
+          echo "$out" | grep -q "for files.state_file does not exist"
+
+      - name: SIGTERM shuts down gracefully
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          docker stop -t 10 tcs >/dev/null
+          elapsed=$(( $(date +%s) - start ))
+          rc=$(docker inspect --format '{{.State.ExitCode}}' tcs)
+          echo "stop took ${elapsed}s, exit code $rc"
+          test "$rc" = "0"
+          test "$elapsed" -le 10
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs tcs || true

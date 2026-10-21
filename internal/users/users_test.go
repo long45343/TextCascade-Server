@@ -3,6 +3,7 @@ package users
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,6 +51,21 @@ func TestBuildUserLookupIsReadOnly(t *testing.T) {
 	f := &UsersFile{NextTokenVersion: 2, Users: []UserRecord{{Username: "alice", PasswordHash: validHash, TokenVersion: 1}}}
 	lookup := f.BuildLookup()
 	assert.Contains(t, lookup, "alice")
+}
+
+// Save 以 0600 写盘：文件含 Argon2 哈希，不依赖运行环境 umask。
+func TestSaveWritesFileMode0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不提供 Unix 权限位语义")
+	}
+
+	path := filepath.Join(t.TempDir(), "users.json")
+	f := &UsersFile{NextTokenVersion: 2, Users: []UserRecord{{Username: "alice", PasswordHash: validHash, TokenVersion: 1}}}
+	require.NoError(t, Save(path, f))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
 // Load 严格性：未知字段 / 重复字段 / 非 UTF-8 拒绝。

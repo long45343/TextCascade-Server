@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -136,6 +137,13 @@ func loadRuntime(configPath string) (*config.RuntimeConfig, *users.UsersFile, *s
 		return nil, nil, nil, err
 	}
 
+	if err := ensureWritableDir("files.users_file", cfg.Files.UsersFile); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := ensureWritableDir("files.state_file", cfg.Files.StateFile); err != nil {
+		return nil, nil, nil, err
+	}
+
 	usersFile, err := users.Load(cfg.Files.UsersFile)
 	if err != nil {
 		return nil, nil, nil, err
@@ -146,6 +154,26 @@ func loadRuntime(configPath string) (*config.RuntimeConfig, *users.UsersFile, *s
 		return nil, nil, nil, err
 	}
 	return &cfg, usersFile, store, nil
+}
+
+// ensureWritableDir 校验 file 的父目录存在且进程可写。
+// 目录缺失时后续写入会静默失败（users 反锁报错、state 每 5s 告警但服务仍"健康"），
+// 在只读根文件系统的容器里尤其难发现，故启动即失败。
+func ensureWritableDir(key, file string) error {
+	directory := filepath.Dir(file)
+	info, err := os.Stat(directory)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("Directory '%s' for %s does not exist.", directory, key)
+	}
+
+	probe, err := os.CreateTemp(directory, ".textcascade-probe-*")
+	if err != nil {
+		return fmt.Errorf("Directory '%s' for %s is not writable: %v", directory, key, err)
+	}
+	probePath := probe.Name()
+	probe.Close()
+	_ = os.Remove(probePath)
+	return nil
 }
 
 func newLogger() *slog.Logger {

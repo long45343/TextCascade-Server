@@ -1,0 +1,43 @@
+# 构建上下文裁剪：只保留编译所需内容。
+
+# 版本控制与本地工具状态
+.git
+.gitignore
+.zcode
+.trae
+
+# 私有规格与决策台账
+specs
+
+# 构建与发布产物
+artifacts
+publish
+release
+*.tar.gz
+*.zip
+TextCascade.Server
+TextCascade.Server.exe
+
+# 非编译代码
+tools
+testdata
+deploy/textcascade-server.service
+*.md
+!deploy/docker/*.toml
+
+# 运行时数据与敏感文件（绝不进镜像）
+users.json
+*.pfx
+*.p12
+*.pem
+*.crt
+*.key
+*.env
+textcascade.env
+
+# IDE / 系统残留
+.vs
+.vscode
+.idea
+.DS_Store
+Thumbs.db

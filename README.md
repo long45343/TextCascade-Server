@@ -179,6 +179,35 @@ GitHub Release 提供两种静态单文件包,目标机无需任何运行时:
 - 配置与 users.json 放 `/etc/textcascade/`,运行状态放 `/var/lib/textcascade/`,程序放 `/opt/textcascade-server/`;目录属主设为 `textcascade:textcascade`。
 - token secret 由 `/etc/textcascade/textcascade.env` 注入。
 
+### 生产部署(Docker)
+
+镜像为 distroless 静态构建(约 11 MB,无 shell,UID 65532),支持 `linux/amd64` 与 `linux/arm64`。
+
+```bash
+docker pull ghcr.io/long45343/textcascade-server:latest
+
+# 仓库已提供 docker/config 骨架 / The repo ships a docker/config skeleton
+cp your.pem docker/config/certs/server.pem
+cp your.key docker/config/certs/server.key
+cp docker/textcascade.env.example docker/textcascade.env
+sed -i "s|^TEXTCASCADE_TOKEN_SECRET=.*|TEXTCASCADE_TOKEN_SECRET=$(openssl rand -base64 48)|" docker/textcascade.env
+chmod 600 docker/textcascade.env
+chown -R 65532:65532 docker/config
+
+docker compose up -d
+docker exec -it textcascade-server /TextCascade.Server user add \
+  --config /etc/textcascade/textcascade.toml --username alice
+```
+
+- 配置目录 `./docker/config` bind 到 `/etc/textcascade`,运行状态用 named volume `textcascade-state`。`users.json` 以「临时文件 + rename」写入,必须目录挂载而非单文件挂载。
+- 容器以 `read_only` 根文件系统 + `cap_drop: ALL` + `no-new-privileges` 运行,只写上述两个卷。
+- 启动时校验数据目录存在且可写,不满足则 fail-fast 并报出具体路径。
+- 登录限流按 `RemoteAddr` 计,**不要部署在 HTTP 层反代之后**(会合并成同一来源);直连发布端口或四层转发均保留源 IP。
+- 证书替换后 `docker compose restart server` 生效。
+- `linux/arm64` 镜像可构建与发布,但**未经 ARM 实机验证**。
+
+完整说明(卷与权限、备份恢复、升级、证书轮换、故障排查、镜像加速)见 [docs/docker.md](docs/docker.md)。
+
 ### 许可
 
 见仓库 [LICENSE](LICENSE)(GPL-3.0)。
@@ -310,6 +339,35 @@ See `deploy/textcascade-server.service`:
 - Managed by systemd with `Restart=on-failure` and hardening flags (`ProtectSystem`, `ProtectHome`, `PrivateTmp`).
 - Config and `users.json` under `/etc/textcascade/`, runtime state under `/var/lib/textcascade/`, and binaries under `/opt/textcascade-server/`; set directory ownership to `textcascade:textcascade`.
 - Token secret injected via `/etc/textcascade/textcascade.env`.
+
+### Production (Docker)
+
+The image is a distroless static build (~11 MB, no shell, UID 65532) for `linux/amd64` and `linux/arm64`.
+
+```bash
+docker pull ghcr.io/long45343/textcascade-server:latest
+
+# 仓库已提供 docker/config 骨架 / The repo ships a docker/config skeleton
+cp your.pem docker/config/certs/server.pem
+cp your.key docker/config/certs/server.key
+cp docker/textcascade.env.example docker/textcascade.env
+sed -i "s|^TEXTCASCADE_TOKEN_SECRET=.*|TEXTCASCADE_TOKEN_SECRET=$(openssl rand -base64 48)|" docker/textcascade.env
+chmod 600 docker/textcascade.env
+chown -R 65532:65532 docker/config
+
+docker compose up -d
+docker exec -it textcascade-server /TextCascade.Server user add \
+  --config /etc/textcascade/textcascade.toml --username alice
+```
+
+- `./docker/config` is bind-mounted to `/etc/textcascade`; runtime state lives in the `textcascade-state` named volume. `users.json` is written atomically (temp file + rename), so mount the directory, never a single file.
+- The container runs with a `read_only` root filesystem, `cap_drop: ALL` and `no-new-privileges`, writing only the two locations above.
+- Startup verifies the data directories exist and are writable, failing fast with the offending path.
+- Login rate limiting keys on `RemoteAddr` and **has no `X-Forwarded-For` support**: do not deploy behind an HTTP-layer reverse proxy (all clients would collapse into one source). Publishing the port directly or layer-4 forwarding preserves the source IP.
+- Replacing the certificate takes effect after `docker compose restart server`.
+- The `linux/arm64` image builds and is published but **has not been verified on ARM hardware**.
+
+Full details (volumes and permissions, backup/restore, upgrades, certificate rotation, troubleshooting, registry mirrors) are in [docs/docker.md](docs/docker.md).
 
 ### License
 

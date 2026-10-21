@@ -1,0 +1,15 @@
+# 镜像内默认配置。
+#
+# 仅在未挂载外部配置时生效（裸 docker run）。路径全部指向容器内的标准位置，
+# 与 compose.yaml 的挂载点一致。通常应挂载自己的配置覆盖本文件：
+#   ./docker/config:/etc/textcascade
+# 挂载是整体替换，不会与本文件合并。
+
+[server]
+bind = "0.0.0.0"
+port = 8443
+certificate_path = "/etc/textcascade/certs/server.pem"
+
+[files]
+users_file = "/etc/textcascade/users.json"
+state_file = "/var/lib/textcascade/textcascade.state.json"

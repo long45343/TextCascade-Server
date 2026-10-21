@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,24 @@ func TestStateStorePersistsHighestVersionAtomically(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 7, third.GetVersion("alice"))
 	third.Stop()
+}
+
+// Flush 以 0600 写盘：与 users.json 一致，不依赖 umask。
+func TestStateStoreWritesFileMode0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不提供 Unix 权限位语义")
+	}
+
+	path := tempStateFile(t)
+	store, err := NewStore(path, 0, nil)
+	require.NoError(t, err)
+	store.SaveVersion("alice", 3)
+	require.True(t, store.Flush())
+	store.Stop()
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
 func TestStateStoreFlushesPeriodicallyInBackground(t *testing.T) {

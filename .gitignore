@@ -43,3 +43,11 @@ Desktop.ini
 logs/
 tmp/
 artifacts/
+
+## Docker 部署的用户数据与密钥
+/docker/config/users.json
+/docker/config/users.json.lock
+/docker/config/certs/*
+!/docker/config/certs/.gitkeep
+/docker/textcascade.env
+/docker/config/textcascade.state.json
