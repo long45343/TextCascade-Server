@@ -194,6 +194,8 @@ jobs:
       - name: Missing volume fails fast with a path
         run: |
           set -euo pipefail
+          # 镜像预建了 /var/lib/textcascade；read_only 根文件系统使其不可写，
+          # 因此这里命中的是 "is not writable" 分支，而非 "does not exist"。
           set +e
           out=$(docker run --rm \
             --user 65532:65532 \
@@ -205,7 +207,8 @@ jobs:
           set -e
           echo "$out"; echo "exit=$rc"
           test "$rc" -eq 1
-          echo "$out" | grep -q "for files.state_file does not exist"
+          echo "$out" | grep -q "for files.state_file"
+          echo "$out" | grep -q "is not writable"
 
       - name: SIGTERM shuts down gracefully
         run: |

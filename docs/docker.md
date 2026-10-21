@@ -89,13 +89,14 @@ chown 65532:65532 docker/config/certs/*
 启动时会校验两个目录存在且可写；不满足则退出码 1 并打印具体路径：
 
 ```
-Configuration error: Directory '/var/lib/textcascade' for files.state_file does not exist.
-Configuration error: Directory '/var/lib/textcascade' for files.state_file is not writable: ... read-only file system
+Configuration error: Directory '/var/lib/textcascade' for files.state_file is not writable: open ...: read-only file system
 ```
 
 出现该报错时检查：卷是否挂载、`chown 65532:65532` 是否执行。
 
-> **保持 `read_only: true`**。镜像内预建了 `/var/lib/textcascade` 目录，若同时去掉 `read_only` 又不挂 state 卷，目录会落在容器可写层：自检通过、服务正常运行，但 `docker rm` 或重建后状态丢失。`read_only: true` 会让该目录变为不可写，从而使自检拦住这种漏挂载。
+> **为什么这里报"不可写"而不是"不存在"**：镜像预建了 `/etc/textcascade` 与 `/var/lib/textcascade`（distroless 没有 mkdir），所以正常镜像里这两个目录总是存在。漏挂卷时它们仍然存在，只是 `read_only: true` 使其不可写——这正是自检要拦的情况。
+>
+> **务必保留 `read_only: true`。** 若去掉它又不挂 state 卷，目录落在容器可写层：自检通过、服务正常运行，但 `docker rm` 或重建后状态丢失。这是唯一无法被自检覆盖的形态，文档在此显式声明。
 
 ### 用户管理
 
@@ -319,13 +320,14 @@ The container runs with `read_only: true`; only the two locations above are writ
 At startup both directories are verified to exist and be writable; otherwise the process exits with code 1 and names the offending path:
 
 ```
-Configuration error: Directory '/var/lib/textcascade' for files.state_file does not exist.
-Configuration error: Directory '/var/lib/textcascade' for files.state_file is not writable: ... read-only file system
+Configuration error: Directory '/var/lib/textcascade' for files.state_file is not writable: open ...: read-only file system
 ```
 
 When you see that, check that the volume is mounted and that `chown 65532:65532` was applied.
 
-> **Keep `read_only: true`.** The image pre-creates `/var/lib/textcascade`. If you drop `read_only` *and* omit the state volume, that directory lands in the container's writable layer: the startup check passes and the service runs normally, but state is lost on `docker rm` or a container rebuild. With `read_only: true` the directory is not writable, so the startup check catches the missing mount.
+> **Why "not writable" rather than "does not exist"**: the image pre-creates `/etc/textcascade` and `/var/lib/textcascade` (distroless has no `mkdir`), so those directories always exist in a stock image. With a missing volume they still exist but `read_only: true` makes them unwritable — exactly the case the check is meant to catch.
+>
+> **Always keep `read_only: true`.** Drop it while also omitting the state volume and the directory lands in the container's writable layer: the startup check passes and the service runs, but state is lost on `docker rm` or a rebuild. That is the one shape the check cannot cover, and it is called out here explicitly.
 
 ### User management
 
