@@ -12,9 +12,14 @@
 # 运行时基底为 distroless static：无 shell、无包管理器，进程以 UID 65532 运行。
 # 容器内无法执行 shell 脚本，用户管理请用
 #   docker exec <container> /TextCascade.Server user ...
+#
+# 两个基底都可通过 build-arg 替换成镜像站地址，供无法直连 Docker Hub / gcr.io 的环境使用：
+#   --build-arg GO_IMAGE=<mirror>/library/golang:1.27-alpine
+#   --build-arg RUNTIME_IMAGE=<mirror>/distroless/static-debian12:nonroot
 ARG GO_IMAGE=golang:1.27-alpine
-FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
+ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
 
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
@@ -37,7 +42,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 RUN mkdir -p /out/rootfs/etc/textcascade /out/rootfs/var/lib/textcascade \
     && touch /out/rootfs/etc/textcascade/.keep /out/rootfs/var/lib/textcascade/.keep
 
-FROM --platform=$TARGETPLATFORM gcr.io/distroless/static-debian12:nonroot
+# 单平台构建时 TARGETPLATFORM 已是默认值，无需显式指定；
+# 多架构构建下省略它也仍然会选择与目标平台匹配的镜像。
+FROM ${RUNTIME_IMAGE}
 
 ARG VERSION=dev
 
