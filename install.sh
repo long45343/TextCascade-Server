@@ -196,7 +196,7 @@ while [ $# -gt 0 ]; do
         --sha256) [ $# -ge 2 ] || die "--sha256 需要一个十六进制摘要。"; FROM_SHA=$2; shift 2 ;;
         --sha256=*) FROM_SHA=${1#*=}; shift ;;
         -*) die "未知选项：$1（见 --help）" ;;
-        *) die "无法识别的参数：$1（动作仅支持 install / upgrade / status / uninstall，见 --help）" ;;
+        *) die "无法识别的参数：$1（动作仅支持 install / upgrade / status / list / uninstall，见 --help）" ;;
     esac
 done
 
